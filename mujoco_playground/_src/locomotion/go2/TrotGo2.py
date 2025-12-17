@@ -196,7 +196,7 @@ class TrotGo2(Go2Env):
         data = mjx.forward(self.mjx_model, data)
 
         # 将机器人放到地面上（和原始 reset 一样）
-        pen = jp.where(data.ncon > 0, jp.min(data._impl.contact.dist), 0.0)
+        pen = jp.where(data._impl.ncon > 0, jp.min(data._impl.contact.dist), 0.0)
         qpos = qpos.at[2].set(qpos[2] - pen)
 
         data = make_data(
