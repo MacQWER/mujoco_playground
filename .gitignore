@@ -10,3 +10,4 @@ logs
 wandb/
 *.mp4
 mujoco_playground/experimental/learning/check_points/
+.vscode/
