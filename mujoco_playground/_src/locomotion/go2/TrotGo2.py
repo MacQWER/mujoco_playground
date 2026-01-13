@@ -17,6 +17,7 @@ from mujoco_playground._src.locomotion.go2.TrotUtil import (
 )
 
 from mujoco_playground._src.locomotion.go2 import go2_constants as consts
+from mujoco_playground._src.locomotion.go2.render_utils import render_trajectory
 
 # Sim
 import mujoco
@@ -342,46 +343,49 @@ class TrotGo2(Go2Env):
             state.info["step"] = state.info["step"] + 1.0
 
             return state.replace(data=data, obs=obs, reward=reward, done=done)
-        
-    def play_ref_motion(self, render_every: int = 2, seed: int = 0):
+    
+    # -------- Render reference motion (optimized) ----------
+    def play_ref_motion(self, render_every: int = 2, seed: int = 0, save_path: str = None):
         """
-        Play the built-in kinematic reference trajectory as an animation.
+        Play the built-in kinematic reference trajectory using the optimized CPU renderer.
 
         Args:
-            render_every: render every Nth frame (for speed)
-            seed: random seed used for reset (to initialize state)
+            render_every: render every Nth frame (downsampling).
+            seed: (Unused in this optimized version but kept for interface compatibility).
+            save_path: Optional path to save the video (e.g., "ref_motion.mp4").
         Returns:
-            frames: list of rendered RGB frames
+            frames: list of rendered RGB frames.
         """
-        print("Playing reference motion...")
+        # Import the function from your utils file
+        # from render_utils import render_trajectory 
+        
+        print("Playing reference motion (Optimized)...")
 
-        rng = jax.random.PRNGKey(seed)
-        state = self.reset(rng)
-        data = state.data
+        # 1. Prepare the trajectory data (qpos only)
+        # Instead of looping and building State objects, we just slice the array.
+        # render_trajectory handles JAX->Numpy conversion automatically.
+        # We slice up to self.l_cycle as per your original logic.
+        ref_qpos = self.kinematic_ref_qpos[:self.l_cycle]
 
-        traj = []
-        for i in range(0, self.l_cycle, render_every):
-            qpos = self.kinematic_ref_qpos[i]
-            qvel = self.kinematic_ref_qvel[i]
+        # 2. Render
+        # CRITICAL: You must pass the CPU mujoco.MjModel here, not the MJX model.
+        # In most Brax environments, this is stored as 'self.sys.mj_model' or just 'self.model'.
+        # Please ensure 'self.sys.mj_model' points to the original mujoco.MjModel.
+        frames = render_trajectory(
+            mj_model=self._mj_model, 
+            trajectory=ref_qpos,
+            dt=self.dt,
+            render_every=render_every,
+            height=480,
+            width=640,
+            save_path=save_path
+        )
 
-            data = data.replace(qpos=qpos, qvel=qvel)
-            data = mjx.forward(self.mjx_model, data)
-            ref_state = state.replace(
-                data=data,
-                obs=None,
-                reward=0.0,
-                done=0.0,
-                info={"step": float(i)},
-            )
-            traj.append(ref_state)
-
+        # 3. Display in Notebook (optional)
         fps = 1.0 / (self.dt * render_every)
-        frames = self.render(traj, height=480, width=640)
         media.show_video(frames, fps=fps, loop=True)
 
-        print(f"Rendered {len(frames)} frames at {fps:.1f} FPS.")
         return frames
-
 
     # -------- obs & reward helpers ----------
     def _get_obs(self, data, state_info: Dict[str, Any]):
