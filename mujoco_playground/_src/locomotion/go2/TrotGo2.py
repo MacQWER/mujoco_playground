@@ -399,7 +399,7 @@ class TrotGo2(Go2Env):
         kin_ref = self.kinematic_ref_qpos[step_idx][7:]
         obs_list = [jp.array([yaw_rate]) * 0.25, g_local, angles - jp.array(self._default_ap_pose), last_action, kin_ref]
         obs = jp.clip(jp.concatenate(obs_list), -100.0, 100.0)
-        return obs
+        return {"state": obs}
 
     def _reward_reference_tracking(self, data, ref_data):
         f = lambda a, b: ((a - b) ** 2).sum(-1).mean()

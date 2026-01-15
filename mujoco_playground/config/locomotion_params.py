@@ -69,6 +69,7 @@ def brax_apg_config(
     rl_config.normalize_observations=True
     rl_config.network_factory = config_dict.create(
         hidden_layer_sizes=(256, 128),
+        policy_obs_key="state",
     )
 
   else:
