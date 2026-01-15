@@ -347,41 +347,24 @@ class TrotGo2(Go2Env):
     # -------- Render reference motion (optimized) ----------
     def play_ref_motion(self, render_every: int = 2, seed: int = 0, save_path: str = None):
         """
-        Play the built-in kinematic reference trajectory using the optimized CPU renderer.
-
-        Args:
-            render_every: render every Nth frame (downsampling).
-            seed: (Unused in this optimized version but kept for interface compatibility).
-            save_path: Optional path to save the video (e.g., "ref_motion.mp4").
-        Returns:
-            frames: list of rendered RGB frames.
+        Play the built-in kinematic reference trajectory.
         """
-        # Import the function from your utils file
-        # from render_utils import render_trajectory 
-        
         print("Playing reference motion (Optimized)...")
 
-        # 1. Prepare the trajectory data (qpos only)
-        # Instead of looping and building State objects, we just slice the array.
-        # render_trajectory handles JAX->Numpy conversion automatically.
-        # We slice up to self.l_cycle as per your original logic.
+        # 1. Prepare data (Slicing array)
         ref_qpos = self.kinematic_ref_qpos[:self.l_cycle]
 
         # 2. Render
-        # CRITICAL: You must pass the CPU mujoco.MjModel here, not the MJX model.
-        # In most Brax environments, this is stored as 'self.sys.mj_model' or just 'self.model'.
-        # Please ensure 'self.sys.mj_model' points to the original mujoco.MjModel.
-        frames = render_trajectory(
-            mj_model=self._mj_model, 
+        # CHANGE: Call internal method, remove 'mj_model' and 'dt' (access via self)
+        frames = self._render_trajectory(
             trajectory=ref_qpos,
-            dt=self.dt,
             render_every=render_every,
             height=480,
             width=640,
             save_path=save_path
         )
 
-        # 3. Display in Notebook (optional)
+        # 3. Display
         fps = 1.0 / (self.dt * render_every)
         media.show_video(frames, fps=fps, loop=True)
 
