@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
+
+# Reference: https://github.com/aatb-ch/mujoco_playground/tree/go2
+
 """Joystick task for Go2."""
 
 from typing import Any, Dict, Optional, Union
