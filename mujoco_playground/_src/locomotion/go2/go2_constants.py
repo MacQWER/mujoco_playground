@@ -3,10 +3,10 @@ from etils import epath
 from mujoco_playground._src import mjx_env
 
 FEET_GEOMS = [
-    "FR",
     "FL",
-    "RR",
+    "FR",
     "RL",
+    "RR",
 ]
 
 ROOT_PATH = mjx_env.ROOT_PATH / "locomotion" / "go2"

@@ -1,7 +1,7 @@
 <mujoco model="go2">
   <compiler angle="radian" meshdir="assets" autolimits="true"/>
 
-  <option cone="pyramidal" impratio="100" iterations="1" ls_iterations="5">
+  <option cone="pyramidal" impratio="100" iterations="4" ls_iterations="5">
     <flag eulerdamp="disable"/>
   </option>
 
@@ -279,7 +279,7 @@
   </sensor>
 
   <keyframe>
-    <key name="home" qpos="0 0 0.27 1 0 0 0 0 0.9 -1.8 0 0.9 -1.8 0 0.9 -1.8 0 0.9 -1.8"
-      ctrl="0 0.9 -1.8 0 0.9 -1.8 0 0.9 -1.8 0 0.9 -1.8"/>
+    <key name="home" qpos="0 0 0.278 1 0 0 0 0.1 0.9 -1.8 0 0.9 -1.8 0.1 0.9 -1.8 0.1 0.9 -1.8"
+      ctrl="0.1 0.9 -1.8 0.1 0.9 -1.8 0.1 0.9 -1.8 0.1 0.9 -1.8"/>
   </keyframe>
 </mujoco>

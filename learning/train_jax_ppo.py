@@ -454,7 +454,17 @@ def main(argv):
   jit_inference_fn = jax.jit(inference_fn)
 
   # Run evaluation rollouts.
-  def do_rollout(rng, state):
+  def do_rollout(rng, state, target_cmd):
+    def set_cmd(state, cmd):
+        new_info = state.info.copy()
+        new_info["command"] = cmd
+        new_obs = state.obs.copy()
+        if "state" in new_obs:
+            new_obs["state"] = new_obs["state"].at[-3:].set(cmd)
+        return state.replace(info=new_info, obs=new_obs)
+
+    state = set_cmd(state, target_cmd)
+
     empty_data = state.data.__class__(
         **{k: None for k in state.data.__annotations__}
     )  # pytype: disable=attribute-error
@@ -466,6 +476,9 @@ def main(argv):
       rng, act_key = jax.random.split(rng)
       act = jit_inference_fn(state.obs, act_key)[0]
       state = eval_env.step(state, act)
+
+      state = set_cmd(state, target_cmd)
+
       traj_data = empty_traj.tree_replace({
           "data.qpos": state.data.qpos,
           "data.qvel": state.data.qvel,
@@ -488,7 +501,11 @@ def main(argv):
   reset_states = jax.jit(jax.vmap(eval_env.reset))(rng)
   if _VISION.value:
     reset_states = jax.tree_util.tree_map(lambda x: x[0], reset_states)
-  traj_stacked = jax.jit(jax.vmap(do_rollout))(rng, reset_states)
+
+  target_command = jp.array([1.0, 0.0, 0.0])
+  batch_commands = jp.tile(target_command, (_NUM_VIDEOS.value, 1))
+
+  traj_stacked = jax.jit(jax.vmap(do_rollout))(rng, reset_states, batch_commands)
   trajectories = [None] * _NUM_VIDEOS.value
   for i in range(_NUM_VIDEOS.value):
     t = jax.tree.map(lambda x, i=i: x[i], traj_stacked)
@@ -508,7 +525,7 @@ def main(argv):
   for i, rollout in enumerate(trajectories):
     traj = rollout[::render_every]
     frames = eval_env.render(
-        traj, height=480, width=640, scene_option=scene_option
+        traj, height=480, width=640, scene_option=scene_option, camera="track"
     )
     media.write_video(f"rollout{i}.mp4", frames, fps=fps)
     print(f"Rollout video saved as 'rollout{i}.mp4'.")

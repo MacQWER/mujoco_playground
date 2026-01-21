@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Joystick task for Go1."""
+"""Joystick task for Go2."""
 
 from typing import Any, Dict, Optional, Union
 
@@ -23,6 +23,7 @@ from mujoco import mjx
 from mujoco.mjx._src import math
 import numpy as np
 
+from mujoco_playground._src import collision
 from mujoco_playground._src import mjx_env
 from mujoco_playground._src.locomotion.go2 import base as go2_base
 from mujoco_playground._src.locomotion.go2 import go2_constants as consts
@@ -31,10 +32,10 @@ from mujoco_playground._src.locomotion.go2 import go2_constants as consts
 def default_config() -> config_dict.ConfigDict:
   return config_dict.create(
       ctrl_dt=0.02,
-      sim_dt=0.002,
+      sim_dt=0.004,
       episode_length=1000,
-      Kp=50.0,
-      Kd=3.5,
+      Kp=35.0,
+      Kd=0.5,
       action_repeat=1,
       action_scale=0.5,
       history_len=1,
@@ -114,10 +115,10 @@ class Joystick(go2_base.Go2Env):
         config_overrides=config_overrides,
     )
     # Contact sensor ids.
-    self._feet_floor_found_sensor = [
-        self._mj_model.sensor(f"{geom}_floor_found").id
-            for geom in consts.FEET_GEOMS
-        ]
+    # self._feet_floor_found_sensor = [
+    #     self._mj_model.sensor(f"{geom}_floor_found").id
+    #         for geom in consts.FEET_GEOMS
+    #     ]
     self._post_init()
 
   def _post_init(self) -> None:
@@ -183,6 +184,19 @@ class Joystick(go2_base.Go2Env):
         njmax=self._config.njmax,
     )
     data = mjx.forward(self.mjx_model, data)
+
+    # pen = jp.where(data.ncon > 0, jp.min(data.contact.dist), 0.0)
+    # qpos = qpos.at[2].set(qpos[2] - pen + 0.01)
+    # data = mjx_env.make_data(
+    #     self.mj_model,
+    #     qpos=qpos,
+    #     qvel=qvel,
+    #     ctrl=qpos[7:],
+    #     impl=self.mjx_model.impl.value,
+    #     nconmax=self._config.nconmax,
+    #     njmax=self._config.njmax,
+    # )
+    # data = mjx.forward(self.mjx_model, data)
 
     rng, key1, key2, key3 = jax.random.split(rng, 4)
     time_until_next_pert = jax.random.uniform(
@@ -261,10 +275,14 @@ class Joystick(go2_base.Go2Env):
         self.mjx_model, state.data, motor_targets, self.n_substeps
     )
 
+    # contact = jp.array([
+    #     data.sensordata[self._mj_model.sensor_adr[sensorid]] > 0
+    #     for sensorid in self._feet_floor_found_sensor
+    # ])
     contact = jp.array([
-        data.sensordata[self._mj_model.sensor_adr[sensorid]] > 0
-        for sensorid in self._feet_floor_found_sensor
-    ])
+        collision.geoms_colliding(data, geom_id, self._floor_geom_id)
+        for geom_id in self._feet_geom_id
+    ])  
     contact_filt = contact | state.info["last_contact"]
     first_contact = (state.info["feet_air_time"] > 0.0) * contact_filt
     state.info["feet_air_time"] += self.dt
