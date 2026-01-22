@@ -27,7 +27,7 @@ class TestSuite(parameterized.TestCase):
   @parameterized.named_parameters(
       {"testcase_name": f"test_can_create_{env_name}", "env_name": env_name}
       # for env_name in locomotion.ALL_ENVS
-      for env_name in ["Go2Joystick", "Go2Trot"]
+      for env_name in ["Go2Joystick", "Go2Trot", "Go2SmoothJoystick"]
   )
   def test_can_create_all_environments(self, env_name: str) -> None:
     env = locomotion.load(env_name)

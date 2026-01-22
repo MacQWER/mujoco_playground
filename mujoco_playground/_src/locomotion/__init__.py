@@ -43,12 +43,16 @@ from mujoco_playground._src.locomotion.t1 import randomize as t1_randomize
 from mujoco_playground._src.locomotion.anymal import TrotAnymal as anymal_trot
 from mujoco_playground._src.locomotion.go2 import TrotGo2 as trot_go2
 from mujoco_playground._src.locomotion.go2 import joystick as go2_joystick
+from mujoco_playground._src.locomotion.go2 import smooth_joystick as go2_smooth_joystick
 from mujoco_playground._src.locomotion.go2 import randomize as go2_randomize
 
 
 _envs = {
     "Go2Joystick": functools.partial(
         go2_joystick.Joystick, task=None
+    ),
+    "Go2SmoothJoystick": functools.partial(
+        go2_smooth_joystick.Joystick, task=None
     ),
     "Go2Trot": functools.partial(
         trot_go2.TrotGo2, task=None
@@ -100,6 +104,7 @@ _envs = {
 }
 
 _cfgs = {
+    "Go2SmoothJoystick": go2_smooth_joystick.default_config,
     "Go2Joystick": go2_joystick.default_config,
     "Go2Trot": trot_go2.default_config,
     "AnymalTrot": anymal_trot.default_config,
@@ -129,6 +134,7 @@ _cfgs = {
 }
 
 _randomizer = {
+    "Go2SmoothJoystick": go2_randomize.domain_randomize,
     "Go2Joystick": go2_randomize.domain_randomize,
     "Go2Trot": go2_randomize.domain_randomize,
     "BerkeleyHumanoidJoystickFlatTerrain": (
