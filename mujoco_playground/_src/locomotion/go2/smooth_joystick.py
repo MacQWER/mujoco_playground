@@ -55,7 +55,8 @@ def default_config() -> config_dict.ConfigDict:
           ),
       ),
       env=config_dict.create(
-          impratio=100
+            impratio=100,
+            iterations=4,
       ),
       reward_config=config_dict.create(
           scales=config_dict.create(
@@ -108,11 +109,18 @@ class Joystick(go2_base.Go2Env):
 
   def __init__(
       self,
-      task: str = None,
+      task: str = "ppo",
       config: config_dict.ConfigDict = default_config(),
       config_overrides: Optional[Dict[str, Union[str, int, list[Any]]]] = None,
   ):
     default_xml = consts.MJX_XML_SENSOR_PATH.as_posix()
+    if task == "ppo":
+        config.env.iterations = 4
+    elif task == "apg":
+        config.env.iterations = 1
+        assert jax.config.read("jax_enable_x64"), "APG requires jax_enable_x64=True"
+    else:
+        raise ValueError(f"Unknown task: {task}")
     super().__init__(
         xml_path=default_xml,
         config=config,

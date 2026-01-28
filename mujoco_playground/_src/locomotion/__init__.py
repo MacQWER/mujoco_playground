@@ -51,8 +51,11 @@ _envs = {
     "Go2Joystick": functools.partial(
         go2_joystick.Joystick, task=None
     ),
-    "Go2SmoothJoystick": functools.partial(
-        go2_smooth_joystick.Joystick, task=None
+    "Go2SmoothJoystickPPO": functools.partial(
+        go2_smooth_joystick.Joystick, task="ppo"
+    ),
+    "Go2SmoothJoystickAPG": functools.partial(
+        go2_smooth_joystick.Joystick, task="apg"
     ),
     "Go2Trot": functools.partial(
         trot_go2.TrotGo2, task=None
@@ -104,7 +107,8 @@ _envs = {
 }
 
 _cfgs = {
-    "Go2SmoothJoystick": go2_smooth_joystick.default_config,
+    "Go2SmoothJoystickPPO": go2_smooth_joystick.default_config,
+    "Go2SmoothJoystickAPG": go2_smooth_joystick.default_config,
     "Go2Joystick": go2_joystick.default_config,
     "Go2Trot": trot_go2.default_config,
     "AnymalTrot": anymal_trot.default_config,
@@ -134,7 +138,8 @@ _cfgs = {
 }
 
 _randomizer = {
-    "Go2SmoothJoystick": go2_randomize.domain_randomize,
+    "Go2SmoothJoystickPPO": go2_randomize.domain_randomize,
+    "Go2SmoothJoystickAPG": go2_randomize.domain_randomize,
     "Go2Joystick": go2_randomize.domain_randomize,
     "Go2Trot": go2_randomize.domain_randomize,
     "BerkeleyHumanoidJoystickFlatTerrain": (
