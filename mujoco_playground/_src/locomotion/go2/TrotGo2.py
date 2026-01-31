@@ -73,7 +73,7 @@ from typing import Any, Dict
 def default_config() -> config_dict.ConfigDict:
     # 注意：MjxEnv 要求 config 里必须包含 sim_dt 和 ctrl_dt
     cfg = config_dict.ConfigDict()
-    cfg.Kp = 80.0          # PD 控制器的比例增益
+    cfg.Kp = 35.0          # PD 控制器的比例增益
     cfg.Kd = 0.5           # PD 控制器的微分增益
     cfg.sim_dt = 0.002          # 物理仿真步长（s）
     cfg.ctrl_dt = 0.02          # 控制步长（s） => n_frames = ctrl_dt / sim_dt = 10
@@ -87,6 +87,7 @@ def default_config() -> config_dict.ConfigDict:
     cfg.env.reset2ref = True
     cfg.env.reference_state_init = False # RSI: Deepmimic
     cfg.env.impratio = 100
+    cfg.env.iterations = 1
     # 扰动配置
     cfg.pert_config = config_dict.ConfigDict()
     cfg.pert_config.enable = False
@@ -372,8 +373,9 @@ class TrotGo2(Go2Env):
 
     # -------- obs & reward helpers ----------
     def _get_obs(self, data, state_info: Dict[str, Any]):
+        q = data.xquat[1]
         local_omega = data.cvel[1, :3]
-        yaw_rate = local_omega[2]
+        yaw_rate = rotate_inv(local_omega, q)[2]
         g_world = jp.array([0.0, 0.0, -1.0])
         g_local = rotate_inv(g_world, data.xquat[1])
         angles = data.qpos[7:19]

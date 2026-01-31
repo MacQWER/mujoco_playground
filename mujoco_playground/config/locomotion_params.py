@@ -86,6 +86,20 @@ def brax_apg_config(
         hidden_layer_sizes=(512, 256, 128),
         policy_obs_key="state",
     )
+  elif env_name in ("Go2Joystick2"):
+    rl_config.episode_length=240
+    rl_config.policy_updates=1000
+    rl_config.horizon_length=32
+    rl_config.num_envs=1024
+    rl_config.learning_rate=1e-4
+    rl_config.num_eval_envs=64
+    rl_config.num_evals=10 + 1
+    rl_config.use_float64=True
+    rl_config.normalize_observations=True
+    rl_config.network_factory = config_dict.create(
+        hidden_layer_sizes=(256, 128),
+        policy_obs_key="state",
+    )
   else:
     raise ValueError(f"Unsupported env: {env_name}")
 

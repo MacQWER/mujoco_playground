@@ -83,3 +83,34 @@ def rotate_inv(v: jp.ndarray, q: jp.ndarray) -> jp.ndarray:
     R = quaternion_to_matrix(q)
     return R.T @ v
 # ----------------- utils end -----------------
+
+# ----------------- Anchor Policy Util ----------------- 
+from apg_alg.networks import apg_networks
+import functools
+
+from mujoco_playground._src.locomotion.go2 import go2_constants as consts
+
+def get_anchor_inference_fn(path: str):
+    from brax.io import model
+    full_params = model.load_params(path)
+
+    from brax.training.acme import running_statistics
+    normalize = running_statistics.normalize
+
+    network_factory = apg_networks.make_apg_networks
+    network_factory = functools.partial(
+        apg_networks.make_apg_networks, 
+            hidden_layer_sizes=(256, 128),
+            policy_obs_key="state",
+    )
+    
+    apg_network = network_factory(
+        observation_size=consts.ANCHOR_OBS_DIM, 
+        action_size=consts.ANCHOR_ACT_DIM, 
+        preprocess_observations_fn=normalize
+    )
+
+    make_inference_fn = apg_networks.make_inference_fn(apg_network)
+    return make_inference_fn(full_params, deterministic=True)
+
+# ----------------- Anchor Policy Util end -----------------

@@ -43,6 +43,7 @@ from mujoco_playground._src.locomotion.t1 import randomize as t1_randomize
 from mujoco_playground._src.locomotion.anymal import TrotAnymal as anymal_trot
 from mujoco_playground._src.locomotion.go2 import TrotGo2 as trot_go2
 from mujoco_playground._src.locomotion.go2 import joystick as go2_joystick
+from mujoco_playground._src.locomotion.go2 import JoystickGo2 as go2_joystick2
 from mujoco_playground._src.locomotion.go2 import smooth_joystick as go2_smooth_joystick
 from mujoco_playground._src.locomotion.go2 import randomize as go2_randomize
 
@@ -50,6 +51,9 @@ from mujoco_playground._src.locomotion.go2 import randomize as go2_randomize
 _envs = {
     "Go2Joystick": functools.partial(
         go2_joystick.Joystick, task=None
+    ),
+    "Go2Joystick2": functools.partial(
+        go2_joystick2.JoystickGo2, task=None
     ),
     "Go2SmoothJoystickPPO": functools.partial(
         go2_smooth_joystick.Joystick, task="ppo"
@@ -110,6 +114,7 @@ _cfgs = {
     "Go2SmoothJoystickPPO": go2_smooth_joystick.default_config,
     "Go2SmoothJoystickAPG": go2_smooth_joystick.default_config,
     "Go2Joystick": go2_joystick.default_config,
+    "Go2Joystick2": go2_joystick2.default_config,
     "Go2Trot": trot_go2.default_config,
     "AnymalTrot": anymal_trot.default_config,
     "ApolloJoystickFlatTerrain": apollo_joystick.default_config,
@@ -141,6 +146,7 @@ _randomizer = {
     "Go2SmoothJoystickPPO": go2_randomize.domain_randomize,
     "Go2SmoothJoystickAPG": go2_randomize.domain_randomize,
     "Go2Joystick": go2_randomize.domain_randomize,
+    "Go2Joystick2": go2_randomize.domain_randomize,
     "Go2Trot": go2_randomize.domain_randomize,
     "BerkeleyHumanoidJoystickFlatTerrain": (
         berkeley_humanoid_randomize.domain_randomize
