@@ -2,12 +2,9 @@ from etils import epath
 
 from mujoco_playground._src import mjx_env
 
-FEET_GEOMS = [
-    "FL",
-    "FR",
-    "RL",
-    "RR",
-]
+FEET_GEOMS = ["FL", "FR", "RL", "RR"]
+
+HIP_NAMES = ["FL_hip", "FR_hip", "RL_hip", "RR_hip"]
 
 ROOT_PATH = mjx_env.ROOT_PATH / "locomotion" / "go2"
 
@@ -46,5 +43,5 @@ GYRO_SENSOR = "gyro"
 # Anchor Policy 相关常量
 ANCHOR_OBS_DIM = 40
 ANCHOR_ACT_DIM = 12
-ANCHOR_PATH = '/data/mujoco_playground/mujoco_playground/experimental/learning/checkpoints/Go2Trot-20260131-114305/trotting_apg_2hz_policy.pkl'
+ANCHOR_PATH = '/data/mujoco_playground/mujoco_playground/experimental/learning/checkpoints/Go2Trot-20260201-141932/trotting_apg_2hz_policy.pkl'
 

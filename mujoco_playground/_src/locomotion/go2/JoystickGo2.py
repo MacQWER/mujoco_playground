@@ -8,6 +8,8 @@ from ml_collections import config_dict
 
 from brax.io import model
 
+import matplotlib.pyplot as plt
+
 from mujoco_playground._src import mjx_env
 from mujoco_playground._src.locomotion.go2.base import Go2Env
 from mujoco_playground._src.locomotion.go2 import go2_constants as consts
@@ -30,7 +32,7 @@ def default_config() -> config_dict.ConfigDict:
     # 2. 环境参数
     cfg.env = config_dict.ConfigDict()
     # [CRITICAL] 必须和 TrotGo2 一致，否则 Anchor 输出的动作幅度不对
-    cfg.env.action_scale = [0.2, 0.8, 0.8] * 4 
+    cfg.env.action_scale = [0.5, 0.5, 0.5] * 4 
     cfg.env.termination_height = 0.1
     cfg.env.step_k = 13    # 保持和 TrotGo2 一致
     cfg.env.impratio = 100
@@ -110,6 +112,7 @@ class JoystickGo2(Go2Env):
         # 身体 ID
         self.base_id = mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_BODY, "base")
         self.feet_inds = jp.array([self._mj_model.geom(name).id for name in consts.FEET_GEOMS])
+        self.hip_inds = jp.array([self._mj_model.body(name).id for name in consts.HIP_NAMES])
         
         # 步态参数
         step_k = int(getattr(self._config.env, "step_k", 25))
@@ -129,6 +132,16 @@ class JoystickGo2(Go2Env):
         self._cmd_a = jp.array(self._config.command_config.a)
         self._cmd_b = jp.array(self._config.command_config.b)
 
+        # Raibert Preparation
+        d = mjx_env.make_data(self.mj_model, qpos=self._init_q)
+        d = mjx.forward(self.mjx_model, d)
+        
+        base_pos = d.xpos[self.base_id]
+        hip_pos = d.xpos[self.hip_inds]
+        rel_pos = hip_pos - base_pos
+        self.leg_offsets_x = rel_pos[:, 0] # [FL, FR, RL, RR]
+        self.leg_offsets_y = rel_pos[:, 1]
+
     # -------- Reset --------
     def reset(self, rng: jax.Array) -> mjx_env.State:
         rng, key_cmd = jax.random.split(rng)
@@ -137,7 +150,7 @@ class JoystickGo2(Go2Env):
         qpos = self._init_q
         qvel = jp.zeros(self.mjx_model.nv)
         
-        # (可选) 稍微随机化初始 yaw 或 位置
+        # TODO 稍微随机化初始 yaw 或 位置
         # rng, key_yaw = jax.random.split(rng)
         # qpos = qpos.at[3:7].set(...) 
 
@@ -153,6 +166,10 @@ class JoystickGo2(Go2Env):
 
         # 2. 初始化 Command
         cmd = self.sample_command(key_cmd, jp.zeros(3))
+
+        # Init Raibert
+        hip_pos = data.xpos[self.hip_inds][:, :2]
+        feet_pos = data.geom_xpos[self.feet_inds][:, :2]
         
         # 3. 初始化 State Info
         state_info = {
@@ -160,11 +177,11 @@ class JoystickGo2(Go2Env):
             'step': 0.0,
             'command': cmd,
             'steps_until_next_cmd': 100,
-            'last_action': self.action_loc, # 这是物理层面的 Normalized Action
+            'last_action': jp.zeros(self.mjx_model.nu), # ctrl
             
             # Raibert & Gait 变量 (用于 Reward)
-            'xy0': data.geom_xpos[self.feet_inds][:, :2],
-            'xy*': data.geom_xpos[self.feet_inds][:, :2],
+            'xy0': feet_pos,
+            'xy*': feet_pos,
             'k0': 0.0,
             
             # Anchor 变量
@@ -181,6 +198,7 @@ class JoystickGo2(Go2Env):
         
         # 执行策略
         anchor_act, _ = self._anchor_inference_fn(anchor_obs, key_anchor)
+        anchor_act = jp.clip(anchor_act, -1.0, 1.0)
         
         # [CRITICAL] 冻结 Anchor 参数，阻断梯度
         anchor_act = jax.lax.stop_gradient(anchor_act)
@@ -198,64 +216,59 @@ class JoystickGo2(Go2Env):
 
     # -------- Step --------
     def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
-        # action: 这里是 Residual Policy 输出的 "残差"
+        # 1. Action Mixing
+        action = jp.clip(action, -1.0, 1.0)
+        anchor_act = state.info['anchor_action']
         
-        # 1. 动作混合
-        anchor_act = state.info['anchor_action'] # 已经在上一步 stop_gradient
-        mixed_action = anchor_act + action
+        # [Trick] Residual Boost if needed (Optional, based on previous discussion)
+        # residual_boost = jp.array([2.5, 1.0, 1.0] * 4) 
+        # mixed_action = anchor_act + action * residual_boost
+        mixed_action = anchor_act + action # Standard mixing
         
-        # Clip 并应用 Scale (Scale 必须是 TrotGo2 的 Scale)
-        mixed_action = jp.clip(mixed_action, -1, 1)
         ctrl = self.action_loc + (mixed_action * self.action_scale)
         
-        # 2. 物理步进
-        data_next = mjx_env.step(self.mjx_model, state.data, ctrl, self.n_substeps)
-        data = data_next.replace(qacc=jax.lax.stop_gradient(data_next.qacc), 
-                                 qfrc_constraint=jax.lax.stop_gradient(data_next.qfrc_constraint))
+        # 2. Physics Step
+        data = mjx_env.step(self.mjx_model, state.data, ctrl, self.n_substeps)
 
-        # 3. Command 更新逻辑 (Timer based)
+        # 3. Command Update
         state.info['rng'], key_cmd, key_time = jax.random.split(state.info['rng'], 3)
         state.info['steps_until_next_cmd'] -= 1
         should_update = state.info['steps_until_next_cmd'] <= 0
         
         new_cmd = self.sample_command(key_cmd, state.info['command'])
-        # 指令持续时间随机化 (0.5s ~ 2.5s 左右)
-        new_timer = jp.round(jax.random.exponential(key_time) * 5.0 / self.dt).astype(jp.int32)
+        new_timer = jp.round(jax.random.exponential(key_time) * 2.5 / self.dt).astype(jp.int32)
         
         state.info['command'] = jp.where(should_update, new_cmd, state.info['command'])
         state.info['steps_until_next_cmd'] = jp.where(should_update, new_timer, state.info['steps_until_next_cmd'])
 
-        # 4. 更新 Raibert Target (用于 Reward 计算)
+        # 4. Update Raibert Target (Standard Hip Logic)
         self._update_raibert_target(data, state.info)
         
         state.info['step'] += 1.0
-        state.info['last_action'] = ctrl # 记录物理 ctrl 用于下一帧 obs
+        state.info['last_action'] = ctrl
 
-        # 5. 计算下一帧的 Anchor Action
+        # 5. Anchor Inference for Next Step
         anchor_obs = self._get_anchor_obs(data, state.info)
-        
-        # Inference
-        next_anchor_act, _ = self._anchor_inference_fn(anchor_obs, key_cmd) # key reused
-        
-        # [CRITICAL] 再次阻断梯度
+        next_anchor_act, _ = self._anchor_inference_fn(anchor_obs, key_cmd) 
+        next_anchor_act = jp.clip(next_anchor_act, -1.0, 1.0)
         next_anchor_act = jax.lax.stop_gradient(next_anchor_act)
-        
         state.info['anchor_action'] = next_anchor_act
 
-        # 6. 计算奖励
-        reward_tuple = self._compute_rewards(data, state.info)
-        reward = sum(reward_tuple.values())
-        
-        # 更新 Metrics
-        for k, v in reward_tuple.items(): 
-            state.metrics[k] = v
-        state.info['reward_tuple'] = reward_tuple
-        
-        # 7. 终止条件 check
+        # 6. Compute Rewards (Modular)
+        # 终止条件
         base_z = data.xpos[self.base_id, 2]
         done = jp.where(base_z < self._config.env.termination_height, 1.0, 0.0)
+        
+        # 计算具体 Reward
+        reward_dict = self._get_reward(data, action, state.info, {}, done)
+        reward = sum(reward_dict.values())
+        
+        # Metrics update
+        for k, v in reward_dict.items():
+            state.metrics[k] = v
+        state.info['reward_tuple'] = reward_dict
 
-        # 8. 获取下一帧 Residual Obs
+        # 7. Obs
         residual_obs = self._get_residual_obs(data, state.info)
         
         return state.replace(data=data, obs={'state': residual_obs}, reward=reward, done=done)
@@ -319,41 +332,69 @@ class JoystickGo2(Go2Env):
 
     # -------- Helpers --------
 
+    # -------- Raibert Heuristic (Standard Hip Logic) --------
     def _update_raibert_target(self, data, info):
         """
-        计算 Raibert Heuristic 落点，用于构造 APG 的 Dense Reward。
+        Raibert Heuristic Target Updater.
+        Phase Logic: Even Step -> FR/RL (Pair 2) Swing.
+        Reference Frame: Hip-Centric.
         """
         s = info['step']
         step_k = self.step_k
         new_step = (s % step_k == 0)
         even_step = ((s // step_k) % 2 == 0)
         
-        # 1. 计算当前 Command 下的理论落点
+        # 1. 解析指令
         v_cmd_local = info['command'][:2]
+        w_cmd_local = info['command'][2]
+        
+        # 2. 计算旋转引起的线速度分量 (v = w x r)
+        # 使用 _post_init 中自动计算的偏移量，不再硬编码
+        v_rot_x = -w_cmd_local * self.leg_offsets_y
+        v_rot_y =  w_cmd_local * self.leg_offsets_x
+
+        # 3. 合成局部线速度
+        v_leg_local = jp.stack([
+            v_cmd_local[0] + v_rot_x,
+            v_cmd_local[1] + v_rot_y
+        ], axis=1)
+
+        # 4. 旋转到世界坐标系
+        # 使用 vmap 批量旋转 4 条腿的速度向量
         quat = data.xquat[1]
-        # 将局部指令速度转到世界系，因为 feet_pos 是世界系
-        v_cmd_global = rotate(jp.concatenate([v_cmd_local, jp.array([0.])]), quat)[:2]
+        v_leg_local_3d = jp.concatenate([v_leg_local, jp.zeros((4, 1))], axis=1)
+        v_leg_global = jax.vmap(rotate, in_axes=(0, None))(v_leg_local_3d, quat)[:, :2]
+
+        # 5. 计算 Raibert 落点 (Hip-Centric)
+        # 物理公式: Target = Hip + (T_stance / 2) * v
+        # 在 Trot 中 T_stance = T_cycle / 2, 所以系数是 T_cycle / 4
+        hip_pos = data.xpos[self.hip_inds][:, :2] 
+        raibert_offset = (self.gait_period / 4.0) * v_leg_global
+        raibert_xy = hip_pos + raibert_offset
         
-        step_period = self.gait_period / 2
-        feet_pos = data.geom_xpos[self.feet_inds][:, :2]
-        raibert_xy = feet_pos + (step_period / 2) * v_cmd_global
-        
-        # 2. 根据步态相位更新目标
-        # Go2 Indices: 0:FL, 1:FR, 2:RL, 3:RR
-        # Trot Pairs: (0, 3) 和 (1, 2)
-        pair1 = jp.array([0, 3])
-        pair2 = jp.array([1, 2])
+        # 6. 更新目标 (Phase Alignment)
+        # Pair 1: FL(0), RR(3) -> 对应 Odd Step (Block 2) 摆动
+        # Pair 2: FR(1), RL(2) -> 对应 Even Step (Block 1) 摆动
+        pair1 = jp.array([0, 3]) 
+        pair2 = jp.array([1, 2]) 
         
         cur_tars = info['xy*']
-        tars_p1 = cur_tars.at[pair1].set(raibert_xy[pair1])
+        
+        # 逻辑: 
+        # Even Step 开始瞬间 -> FR/RL (Pair 2) 变成摆动腿 -> 更新它们的目标
         tars_p2 = cur_tars.at[pair2].set(raibert_xy[pair2])
         
-        # 如果是新的一步，且是偶数步 -> 更新 Pair1
-        xy_tars = jp.where(new_step & even_step, tars_p1, cur_tars)
-        # 如果是新的一步，且是奇数步 -> 更新 Pair2
-        xy_tars = jp.where(new_step & (~even_step), tars_p2, xy_tars)
+        # Odd Step 开始瞬间 -> FL/RR (Pair 1) 变成摆动腿 -> 更新它们的目标
+        tars_p1 = cur_tars.at[pair1].set(raibert_xy[pair1])
+        
+        # 选择
+        xy_tars = jp.where(new_step & even_step, tars_p2, cur_tars)
+        xy_tars = jp.where(new_step & (~even_step), tars_p1, xy_tars)
         
         info['xy*'] = xy_tars
+        
+        # 记录起跳点 (用于插值 Reward)
+        feet_pos = data.geom_xpos[self.feet_inds][:, :2]
         info['xy0'] = jp.where(new_step, feet_pos, info['xy0'])
         info['k0'] = jp.where(new_step, s, info['k0'])
 
@@ -366,58 +407,199 @@ class JoystickGo2(Go2Env):
         mask = jax.random.bernoulli(key2, self._cmd_b, (3,))
         return new_cmd * mask
 
-    def _compute_rewards(self, data, info):
+    # -------- Modular Rewards --------
+    def _get_reward(
+        self,
+        data: mjx.Data,
+        action: jax.Array,
+        info: dict[str, Any],
+        metrics: dict[str, Any],
+        done: jax.Array,
+    ) -> dict[str, jax.Array]:
         """
-        计算奖励。结合了 Tracking (Joystick) 和 Geometry (APG)。
+        聚合所有 Reward 组件。
         """
-        # 1. Raibert Position Cost (Dense Gradient for APG)
+        scales = self._config.rewards.scales
+        
+        rewards = {
+            "tracking_lin_vel": self._reward_tracking_lin_vel(data, info) * scales.tracking_lin_vel,
+            "tracking_ang_vel": self._reward_tracking_ang_vel(data, info) * scales.tracking_ang_vel,
+            "feet_pos": self._cost_feet_pos(data, info) * scales.feet_pos,
+            "feet_height": self._cost_feet_height(data, info) * scales.feet_height,
+            "lin_vel_z": self._cost_lin_vel_z(data) * scales.lin_vel_z,
+            "orientation": self._cost_orientation(data) * scales.orientation,
+            "torques": self._cost_torques(data) * scales.torques,
+        }
+        
+        return rewards
+
+    # --- Individual Reward Functions ---
+    
+    def _reward_tracking_lin_vel(self, data, info):
+        q = data.xquat[1]
+        v_local = rotate_inv(data.cvel[1, 3:], q)
+        cmd = info['command'][:2]
+        err = jp.sum(jp.square(cmd - v_local[:2]))
+        return jp.exp(-err / self._config.rewards.tracking_sigma)
+
+    def _reward_tracking_ang_vel(self, data, info):
+        q = data.xquat[1]
+        w_local = rotate_inv(data.cvel[1, :3], q)
+        cmd = info['command'][2]
+        err = jp.square(cmd - w_local[2])
+        return jp.exp(-err / self._config.rewards.tracking_sigma)
+
+    def _cost_feet_pos(self, data, info):
+        # Raibert Cost
+        # 计算当前时刻应该在的位置 (插值)
         dt_step = (info['step'] - info['k0']) * self.dt
         step_period = self.gait_period / 2
-        # 插值比例 0 -> 1
         ratio = jp.clip(dt_step / step_period, 0.0, 1.0)
-        # 当前时刻的期望足端位置
+        
+        # 目标轨迹：从起跳点(xy0) 移动到 Raibert目标点(xy*)
         xyt = info['xy0'] + (info['xy*'] - info['xy0']) * ratio
         
         curr_feet = data.geom_xpos[self.feet_inds][:, :2]
-        r_feet_pos = jp.sum(jp.square(curr_feet - xyt)) # MSE Cost
-        
-        # 2. Feet Height Cost (Sine Wave)
-        t = info['step'] * self.dt
-        phase = (2 * jp.pi / self.gait_period) * t
-        # Trot Phase Logic:
-        sin1 = jp.sin(phase)
-        sin2 = jp.sin(phase - jp.pi)
-        h_tar = 0.08 # Max swing height
-        h_ref1 = jp.clip(sin1, 0, 1) * h_tar + 0.02
-        h_ref2 = jp.clip(sin2, 0, 1) * h_tar + 0.02
-        # Pair1 (0,3) match h_ref2? 
-        # 注意: TrotGo2 的 ref 逻辑比较复杂，这里简化为两组对角线
-        # 0:FL, 1:FR, 2:RL, 3:RR
-        h_tars = jp.array([h_ref1, h_ref2, h_ref2, h_ref1]) 
-        curr_feet_z = data.geom_xpos[self.feet_inds][:, 2]
-        r_feet_height = jp.sum(jp.square(curr_feet_z - h_tars))
+        dist_sq = jp.sum(jp.square(curr_feet - xyt))
+        return dist_sq
 
-        # 3. Velocity Tracking
+    def _cost_feet_height(self, data, info):
+        """
+        Feet Height Tracking Cost.
+        Must strictly align with Kinematic Reference phase.
+        """
+        # 1. 计算当前在 step_k 周期内的时间
+        t = (info['step'] % self.step_k) * self.dt
+        step_period = self.step_k * self.dt
+        
+        # 2. 复刻 Reference 的 cos 波形 (0 -> 1 -> 0)
+        # 原始公式: -cos(2*pi*t/T) * 0.5 + 0.5
+        wave_phase = ((2 * jp.pi) / step_period) * t
+        ref_wave = -jp.cos(wave_phase) * 0.5 + 0.5
+        
+        # 3. 设定高度
+        h_tar_swing = 0.08  # 摆动高度
+        h_tar_stance = 0.02 # 支撑高度 (稍微离地一点点避免穿模噪音)
+        
+        h_swing = ref_wave * h_tar_swing + h_tar_stance
+        h_stance = h_tar_stance
+        
+        # 4. 相位分配
+        # Even Step: FR(1)/RL(2) Swing
+        # Odd Step:  FL(0)/RR(3) Swing
+        chunk_idx = (info['step'] // self.step_k).astype(int)
+        even_chunk = (chunk_idx % 2 == 0)
+        
+        # 目标向量构建 [FL, FR, RL, RR]
+        # Even: [Stance, Swing, Swing, Stance]
+        targets_even = jp.array([h_stance, h_swing, h_swing, h_stance])
+        # Odd:  [Swing, Stance, Stance, Swing]
+        targets_odd  = jp.array([h_swing, h_stance, h_stance, h_swing])
+        
+        h_tars = jp.where(even_chunk, targets_even, targets_odd)
+        
+        # 5. 计算 Cost
+        curr_feet_z = data.geom_xpos[self.feet_inds][:, 2]
+        errs = jp.sum(jp.square(curr_feet_z - h_tars))
+        return errs
+
+    def _cost_lin_vel_z(self, data):
+        return jp.square(data.cvel[1, 5])
+
+    def _cost_orientation(self, data):
         q = data.xquat[1]
-        v_local = rotate_inv(data.cvel[1, 3:], q)
-        w_local = rotate_inv(data.cvel[1, :3], q)
-        
-        r_lin_vel = jp.exp(-jp.sum(jp.square(info['command'][:2] - v_local[:2])) / 0.25)
-        r_ang_vel = jp.exp(-jp.square(info['command'][2] - w_local[2]) / 0.25)
-        
-        # 4. Regularization
-        r_lin_vel_z = jp.square(data.cvel[1, 5]) # global z vel
         g_local = rotate_inv(jp.array([0., 0., -1.]), q)
-        r_ori = jp.sum(jp.square(g_local[:2])) # projected gravity xy
-        r_torques = jp.sum(jp.square(data.qfrc_actuator[6:]))
+        return jp.sum(jp.square(g_local[:2])) # xy component should be 0
+
+    def _cost_torques(self, data):
+        return jp.sum(jp.square(data.qfrc_actuator[6:]))
+    
+    # --- Debug Util ---
+
+    def check_phase_alignment(self):
+        """
+        Debug工具：绘制 Reference Motion Z轴高度 vs Heuristic Target Z轴高度。
+        用于验证相位是否对齐。
+        """
+        print("Checking Phase Alignment...")
         
-        scales = self._config.rewards.scales
-        return {
-            'tracking_lin_vel': r_lin_vel * scales.tracking_lin_vel,
-            'tracking_ang_vel': r_ang_vel * scales.tracking_ang_vel,
-            'feet_pos': r_feet_pos * scales.feet_pos, 
-            'feet_height': r_feet_height * scales.feet_height,
-            'lin_vel_z': r_lin_vel_z * scales.lin_vel_z,
-            'orientation': r_ori * scales.orientation,
-            'torques': r_torques * scales.torques,
-        }
+        # 模拟一个完整的步态周期 (2 * step_k)
+        cycle_len = self.l_cycle
+        steps = np.arange(cycle_len)
+        
+        ref_z_log = []
+        heuristic_z_log = []
+        
+        # 创建一个 dummy data 用于调用 _cost_feet_height
+        # 我们不需要真实的物理 step，只需要 info['step']
+        dummy_data = mjx.make_data(self.mj_model) # 空数据
+        
+        for s in steps:
+            # 1. 获取 Reference Motion 的 Z 高度 (Ground Truth)
+            # Reference Qpos 结构: [Base(7), Joints(12)]
+            # 我们需要通过正向运动学算出 Ref 对应的脚高度
+            # 这里简单起见，我们直接复用 make_kinematic_ref 里的波形逻辑来生成 Truth
+            # 或者更严谨地，直接读 kinematic_ref_qpos
+            
+            # 这里我们用你提供的 cos_wave 逻辑重算一遍 "理论上的 Reference Z"
+            t = (s % self.step_k) * self.dt
+            step_period = self.step_k * self.dt
+            wave_phase = ((2 * np.pi) / step_period) * t
+            ref_val = -np.cos(wave_phase) * 0.5 + 0.5
+            
+            # 判断当前脚的状态 (Block 1 vs Block 2)
+            is_even = (s // self.step_k) % 2 == 0
+            
+            # 记录 FL (左前, index 0) 的高度
+            # Even Step (Block 1): FL 是支撑 (Stance) -> 高度应该是 0
+            # Odd Step (Block 2): FL 是摆动 (Swing) -> 高度应该是 ref_val * scale
+            if is_even:
+                ref_z_fl = 0.02 # stance
+            else:
+                ref_z_fl = ref_val * 0.08 + 0.02 # swing
+            
+            ref_z_log.append(ref_z_fl)
+            
+            # 2. 获取 Heuristic Target 的 Z 高度
+            # 调用你的函数
+            info = {'step': jp.array(s)}
+            
+            # 我们 hack 一下 _cost_feet_height 里的逻辑提取出 h_tars
+            # 直接复制 _cost_feet_height 的逻辑片段:
+            t_jax = (info['step'] % self.step_k) * self.dt
+            wave_phase_jax = ((2 * jp.pi) / step_period) * t_jax
+            ref_wave_jax = -jp.cos(wave_phase_jax) * 0.5 + 0.5
+            h_swing = ref_wave_jax * 0.08 + 0.02
+            h_stance = 0.02
+            
+            chunk_idx = (info['step'] // self.step_k).astype(int)
+            even_chunk = (chunk_idx % 2 == 0)
+            
+            # 提取 FL (index 0) 的目标
+            # Even: targets_even[0] = h_stance
+            # Odd:  targets_odd[0]  = h_swing
+            fl_target = jp.where(even_chunk, h_stance, h_swing)
+            
+            heuristic_z_log.append(float(fl_target))
+
+        # 3. 绘图
+        plt.figure(figsize=(10, 4))
+        plt.plot(steps, ref_z_log, label='Reference Motion (FL Leg)', linewidth=3, alpha=0.5)
+        plt.plot(steps, heuristic_z_log, 'r--', label='Heuristic Target (FL Leg)')
+        
+        # 标注相位区域
+        plt.axvspan(0, self.step_k, color='gray', alpha=0.1, label='Even Step (Phase 1)')
+        plt.axvspan(self.step_k, self.step_k*2, color='green', alpha=0.1, label='Odd Step (Phase 2)')
+        
+        plt.title(f"Phase Alignment Check (Step K = {self.step_k})")
+        plt.xlabel("Step")
+        plt.ylabel("Z Height (m)")
+        plt.legend()
+        plt.grid(True)
+        plt.show()
+        
+        print("Analysis:")
+        print("Even Step (0~13): FL should be Stance (Low).")
+        print("Odd Step (13~26): FL should be Swing (High).")
+
+    
