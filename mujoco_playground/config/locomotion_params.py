@@ -88,13 +88,18 @@ def brax_apg_config(
     )
   elif env_name in ("Go2Joystick2"):
     rl_config.episode_length=240
-    rl_config.policy_updates=1000
-    rl_config.horizon_length=32
-    rl_config.num_envs=1024
+    rl_config.policy_updates=500
+    rl_config.horizon_length=64
+    rl_config.num_envs=128
+    rl_config.deterministic_eval=True
     rl_config.learning_rate=1e-4
     rl_config.num_eval_envs=64
-    rl_config.num_evals=10 + 1
+    rl_config.num_evals=20 + 1
+    rl_config.max_gradient_norm=1.0
+    rl_config.reward_scale = 10.0
     rl_config.use_float64=True
+    rl_config.use_mixed_precision=True
+    rl_config.unrollout_length=4
     rl_config.normalize_observations=True
     rl_config.network_factory = config_dict.create(
         hidden_layer_sizes=(256, 128),
