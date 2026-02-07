@@ -464,11 +464,14 @@ class JoystickGo2(Go2Env):
         cmd_norm = jp.linalg.norm(info['command'])
         
         # 1. 运动掩码: 当 cmd > 0.01 时接近 1，否则接近 0
+        # turned off masking for now
         # 系数 200.0 决定了 Sigmoid 的陡峭程度
-        move_mask = jax.nn.sigmoid((cmd_norm - 0.01) * 200.0)
+        # move_mask = jax.nn.sigmoid((cmd_norm - 0.01) * 200.0)
+        move_mask = 1.0
         
         # 2. 静止掩码: 当 cmd < 0.01 时接近 1，否则接近 0
-        still_mask = jax.nn.sigmoid((0.01 - cmd_norm) * 200.0)
+        # still_mask = jax.nn.sigmoid((0.01 - cmd_norm) * 200.0)
+        still_mask = 0.0
         
         # 将 Mask 存入 extra_args 供子函数调用
         extra_args['move_mask'] = move_mask
