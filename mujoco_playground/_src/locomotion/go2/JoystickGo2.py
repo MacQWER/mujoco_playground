@@ -4,6 +4,7 @@ import jax.numpy as jp
 import numpy as np
 import mujoco
 from mujoco import mjx
+from mujoco.mjx._src import math
 from ml_collections import config_dict
 
 from brax.io import model
@@ -38,8 +39,15 @@ def default_config() -> config_dict.ConfigDict:
     cfg.command_config = config_dict.ConfigDict()
     cfg.command_config.a = [1.5, 0.80, 1.2]
     cfg.command_config.b = [0.9, 0.25, 0.5]
+
+    # 3. Disturbance 配置 (新增)
+    cfg.disturbance = config_dict.ConfigDict()
+    cfg.disturbance.enable = False
+    cfg.disturbance.velocity_kick = [0.0, 3.0]
+    cfg.disturbance.kick_durations = [0.05, 0.2]
+    cfg.disturbance.kick_wait_times = [1.0, 3.0]
     
-    # 3. 奖励配置 (核心修改)
+    # 4. 奖励配置 (核心修改)
     cfg.rewards = config_dict.ConfigDict()
     cfg.rewards.scales = config_dict.ConfigDict()
     
@@ -71,7 +79,7 @@ def default_config() -> config_dict.ConfigDict:
     cfg.rewards.max_foot_height = 0.08
     cfg.soft_joint_pos_limit_factor = 0.95
 
-    # 4. Anchor 配置
+    # 5. Anchor 配置
     cfg.anchor = config_dict.ConfigDict()
     cfg.anchor.path = consts.ANCHOR_PATH
     
@@ -165,6 +173,7 @@ class JoystickGo2(Go2Env):
         rel_pos = hip_pos - base_pos
         self.leg_offsets_x = rel_pos[:, 0]
         self.leg_offsets_y = rel_pos[:, 1]
+        self.base_mass = self.mj_model.body("base").mass
 
     # -------- Reset --------
     def reset(self, rng: jax.Array) -> mjx_env.State:
@@ -173,9 +182,21 @@ class JoystickGo2(Go2Env):
         qpos = self._init_q
         qvel = jp.zeros(self.mjx_model.nv)
         
-        # TODO 稍微随机化初始 yaw 或 位置
-        # rng, key_yaw = jax.random.split(rng)
-        # qpos = qpos.at[3:7].set(...) 
+        # x=+U(-0.5, 0.5), y=+U(-0.5, 0.5), yaw=U(-3.14, 3.14).
+        rng, key = jax.random.split(rng)
+        dxy = jax.random.uniform(key, (2,), minval=-0.5, maxval=0.5)
+        qpos = qpos.at[0:2].set(qpos[0:2] + dxy)
+        rng, key = jax.random.split(rng)
+        yaw = jax.random.uniform(key, (1,), minval=-3.14, maxval=3.14)
+        quat = math.axis_angle_to_quat(jp.array([0, 0, 1]), yaw)
+        new_quat = math.quat_mul(qpos[3:7], quat)
+        qpos = qpos.at[3:7].set(new_quat)
+
+        # d(xyzrpy)=U(-0.5, 0.5)
+        rng, key = jax.random.split(rng)
+        qvel = qvel.at[0:6].set(
+            jax.random.uniform(key, (6,), minval=-0.5, maxval=0.5)
+        )
 
         data = mjx_env.make_data(self.mj_model, qpos=qpos, qvel=qvel, ctrl=jp.zeros(12),
                                  impl=self.mjx_model.impl.value, 
@@ -191,6 +212,29 @@ class JoystickGo2(Go2Env):
 
         hip_pos = data.xpos[self.hip_inds][:, :2]
         feet_pos = data.geom_xpos[self.feet_inds][:, :2]
+        
+        rng, key_wait, key_dur, key_mag = jax.random.split(rng, 4)
+        time_until_next_pert = jax.random.uniform(
+            key_wait,
+            minval=self._config.disturbance.kick_wait_times[0],
+            maxval=self._config.disturbance.kick_wait_times[1],
+        )
+        steps_until_next_pert = jp.round(time_until_next_pert / self.dt).astype(
+            jp.int32
+        )
+        pert_duration_seconds = jax.random.uniform(
+            key_dur,
+            minval=self._config.disturbance.kick_durations[0],
+            maxval=self._config.disturbance.kick_durations[1],
+        )
+        pert_duration_steps = jp.round(pert_duration_seconds / self.dt).astype(
+            jp.int32
+        )
+        pert_mag = jax.random.uniform(
+            key_mag,
+            minval=self._config.disturbance.velocity_kick[0],
+            maxval=self._config.disturbance.velocity_kick[1],
+        )
         
         # 初始化 State Info (包含新增变量)
         state_info = {
@@ -211,6 +255,13 @@ class JoystickGo2(Go2Env):
             'xy*': feet_pos,
             'k0': 0.0,
             'anchor_action': jp.zeros(12),
+            'steps_until_next_pert': steps_until_next_pert,
+            'pert_duration_seconds': pert_duration_seconds,
+            'pert_duration': pert_duration_steps,
+            'steps_since_last_pert': 0,
+            'pert_steps': 0,
+            'pert_dir': jp.zeros(3),
+            'pert_mag': pert_mag,
             'reward_tuple': {k: 0.0 for k in self._config.rewards.scales.keys()}
         }
 
@@ -233,6 +284,9 @@ class JoystickGo2(Go2Env):
 
     # -------- Step --------
     def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
+        # 0. add disturbance (新增)
+        if self._config.disturbance.enable:
+            state = self._maybe_apply_perturbation(state)
         # 1. Action Mixing
         action = jp.clip(action, -1.0, 1.0)
         anchor_act = state.info['anchor_action']
@@ -308,6 +362,107 @@ class JoystickGo2(Go2Env):
         residual_obs = self._get_residual_obs(data, state.info)
         
         return state.replace(data=data, obs={'state': residual_obs}, reward=reward, done=done)
+
+    # ----------------- Disturbance -----------------
+    def _maybe_apply_perturbation(self, state: mjx_env.State) -> mjx_env.State:
+        def gen_dir(rng: jax.Array) -> jax.Array:
+            angle = jax.random.uniform(rng, minval=0.0, maxval=jp.pi * 2)
+            return jp.array([jp.cos(angle), jp.sin(angle), 0.0])
+
+        def apply_pert(state: mjx_env.State) -> mjx_env.State:
+            t = state.info["pert_steps"] * self.dt
+            u_t = 0.5 * jp.sin(jp.pi * t / state.info["pert_duration_seconds"])
+            force = (
+                u_t
+                * self.base_mass
+                * state.info["pert_mag"]
+                / state.info["pert_duration_seconds"]
+            )
+            xfrc_applied = jp.zeros((self.mjx_model.nbody, 6))
+            xfrc_applied = xfrc_applied.at[self.base_id, :3].set(
+                force * state.info["pert_dir"]
+            )
+            state.info["rng"], key_wait, key_dur, key_mag = jax.random.split(
+                state.info["rng"], 4
+            )
+            done_kick = state.info["pert_steps"] >= state.info["pert_duration"]
+            time_until_next_pert = jax.random.uniform(
+                key_wait,
+                minval=self._config.disturbance.kick_wait_times[0],
+                maxval=self._config.disturbance.kick_wait_times[1],
+            )
+            steps_until_next_pert = jp.round(time_until_next_pert / self.dt).astype(
+                jp.int32
+            )
+            pert_duration_seconds = jax.random.uniform(
+                key_dur,
+                minval=self._config.disturbance.kick_durations[0],
+                maxval=self._config.disturbance.kick_durations[1],
+            )
+            pert_duration_steps = jp.round(pert_duration_seconds / self.dt).astype(
+                jp.int32
+            )
+            pert_mag = jax.random.uniform(
+                key_mag,
+                minval=self._config.disturbance.velocity_kick[0],
+                maxval=self._config.disturbance.velocity_kick[1],
+            )
+            data = state.data.replace(xfrc_applied=xfrc_applied)
+            state = state.replace(data=data)
+            state.info["steps_since_last_pert"] = jp.where(
+                done_kick,
+                0,
+                state.info["steps_since_last_pert"],
+            )
+            state.info["steps_until_next_pert"] = jp.where(
+                done_kick,
+                steps_until_next_pert,
+                state.info["steps_until_next_pert"],
+            )
+            state.info["pert_duration_seconds"] = jp.where(
+                done_kick,
+                pert_duration_seconds,
+                state.info["pert_duration_seconds"],
+            )
+            state.info["pert_duration"] = jp.where(
+                done_kick,
+                pert_duration_steps,
+                state.info["pert_duration"],
+            )
+            state.info["pert_mag"] = jp.where(
+                done_kick,
+                pert_mag,
+                state.info["pert_mag"],
+            )
+            state.info["pert_steps"] += 1
+            return state
+
+        def wait(state: mjx_env.State) -> mjx_env.State:
+            state.info["rng"], rng = jax.random.split(state.info["rng"])
+            state.info["steps_since_last_pert"] += 1
+            xfrc_applied = jp.zeros((self.mjx_model.nbody, 6))
+            data = state.data.replace(xfrc_applied=xfrc_applied)
+            state.info["pert_steps"] = jp.where(
+                state.info["steps_since_last_pert"]
+                >= state.info["steps_until_next_pert"],
+                0,
+                state.info["pert_steps"],
+            )
+            state.info["pert_dir"] = jp.where(
+                state.info["steps_since_last_pert"]
+                >= state.info["steps_until_next_pert"],
+                gen_dir(rng),
+                state.info["pert_dir"],
+            )
+            return state.replace(data=data)
+        
+        return jax.lax.cond(
+            state.info["steps_since_last_pert"]
+            >= state.info["steps_until_next_pert"],
+            apply_pert,
+            wait,
+            state,
+        )
 
     # -------- Observation Generators --------
     
