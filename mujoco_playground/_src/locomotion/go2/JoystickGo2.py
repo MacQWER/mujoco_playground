@@ -34,6 +34,16 @@ def default_config() -> config_dict.ConfigDict:
     cfg.env.step_k = 13
     cfg.env.impratio = 100
     cfg.env.iterations = 1
+
+    # 1.5. Observation Noise (参考 joystick.py)
+    cfg.noise_config = config_dict.ConfigDict()
+    cfg.noise_config.level = 1.0  # Set to 0.0 to disable noise.
+    cfg.noise_config.scales = config_dict.ConfigDict()
+    cfg.noise_config.scales.joint_pos = 0.03
+    cfg.noise_config.scales.joint_vel = 1.5
+    cfg.noise_config.scales.gyro = 0.2
+    cfg.noise_config.scales.gravity = 0.05
+    cfg.noise_config.scales.linvel = 0.1
     
     # 2. 指令配置
     cfg.command_config = config_dict.ConfigDict()
@@ -73,7 +83,7 @@ def default_config() -> config_dict.ConfigDict:
     cfg.rewards.scales.feet_air_time = 1.0
     cfg.rewards.scales.dof_pos_limits = -1.0
     cfg.rewards.scales.stand_still = -0.5
-    cfg.rewards.scales.termination = -1.0  # Soft termination
+    cfg.rewards.scales.termination = -10.0  # Soft termination
     
     cfg.rewards.tracking_sigma = 0.25
     cfg.rewards.max_foot_height = 0.08
@@ -267,13 +277,12 @@ class JoystickGo2(Go2Env):
 
         # Anchor Inference
         anchor_obs = self._get_anchor_obs(data, state_info)
-        rng, key_anchor = jax.random.split(rng)
+        state_info["rng"], key_anchor = jax.random.split(state_info["rng"])
         anchor_act, _ = self._anchor_inference_fn(anchor_obs, key_anchor)
         anchor_act = jp.clip(anchor_act, -1.0, 1.0)
         anchor_act = jax.lax.stop_gradient(anchor_act)
         
         state_info['anchor_action'] = anchor_act
-        state_info['rng'] = rng
 
         residual_obs = self._get_residual_obs(data, state_info)
         
@@ -332,7 +341,8 @@ class JoystickGo2(Go2Env):
         # Hard Termination (翻车保护 + 飞天保护)
         fall_termination = up_z < 0.0
         base_z = data.xpos[self.base_id, 2]
-        height_termination = (base_z < 0.05) | (base_z > 0.8)
+        # height_termination = (base_z < 0.05) | (base_z > 0.8)
+        height_termination = base_z > 1.0
         done = jp.where(fall_termination | height_termination, 1.0, 0.0)
         
         # Soft Done
@@ -465,6 +475,15 @@ class JoystickGo2(Go2Env):
         )
 
     # -------- Observation Generators --------
+
+    def _apply_obs_noise(self, info: dict[str, Any], x: jax.Array, scale: float):
+        info["rng"], noise_rng = jax.random.split(info["rng"])
+        noise = (
+            (2 * jax.random.uniform(noise_rng, shape=x.shape) - 1)
+            * self._config.noise_config.level
+            * scale
+        )
+        return x + noise
     
     def _get_anchor_obs(self, data, info):
         """
@@ -475,9 +494,18 @@ class JoystickGo2(Go2Env):
         q = data.xquat[1]
         local_omega = data.cvel[1, :3]
         yaw_rate = rotate_inv(local_omega, q)[2]
+        yaw_rate = self._apply_obs_noise(
+            info, yaw_rate, self._config.noise_config.scales.gyro
+        )
         
         g_local = rotate_inv(jp.array([0., 0., -1.]), q)
+        g_local = self._apply_obs_noise(
+            info, g_local, self._config.noise_config.scales.gravity
+        )
         angles = data.qpos[7:19]
+        angles = self._apply_obs_noise(
+            info, angles, self._config.noise_config.scales.joint_pos
+        )
         
         # 注意: TrotGo2 使用的是上一帧输出的 raw action (scaled 之前还是之后? 通常是 normalized)
         # 但在 TrotGo2 代码中: obs_list.append(last_action) 且 state.info["last_action"] = ctrl
@@ -507,16 +535,33 @@ class JoystickGo2(Go2Env):
         """
         q = data.xquat[1]
         v_local = rotate_inv(data.cvel[1, 3:], q)
+        v_local = self._apply_obs_noise(
+            info, v_local, self._config.noise_config.scales.linvel
+        )
         w_local = rotate_inv(data.cvel[1, :3], q)
+        w_local = self._apply_obs_noise(
+            info, w_local, self._config.noise_config.scales.gyro
+        )
         g_local = rotate_inv(jp.array([0., 0., -1.]), q)
+        g_local = self._apply_obs_noise(
+            info, g_local, self._config.noise_config.scales.gravity
+        )
         
         obs_list = [
             v_local,          # 3
             w_local,          # 3
             g_local,          # 3
             info['command'],  # 3 (Vx, Vy, Wz)
-            data.qpos[7:19] - self._default_ap_pose, # 12
-            data.qvel[6:],    # 12
+            self._apply_obs_noise(
+                info,
+                data.qpos[7:19],
+                self._config.noise_config.scales.joint_pos,
+            ) - self._default_ap_pose, # 12
+            self._apply_obs_noise(
+                info,
+                data.qvel[6:],
+                self._config.noise_config.scales.joint_vel,
+            ),    # 12
             info['anchor_action'], # 12 (让 Agent 知道 Anchor 想做什么)
         ]
         return jp.clip(jp.concatenate(obs_list), -100.0, 100.0)
