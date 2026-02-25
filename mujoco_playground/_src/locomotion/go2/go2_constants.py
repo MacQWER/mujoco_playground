@@ -45,3 +45,5 @@ ANCHOR_OBS_DIM = 40
 ANCHOR_ACT_DIM = 12
 ANCHOR_PATH = '/data/mujoco_playground/mujoco_playground/experimental/learning/checkpoints/Go2Trot-20260201-141932/trotting_apg_2hz_policy.pkl'
 
+RESIDUAL_OBS_DIM = 48
+RESIDUAL_ACT_DIM = 12
