@@ -83,7 +83,7 @@ def default_config() -> config_dict.ConfigDict:
     cfg.env.termination_height = 0.1
     cfg.env.step_k = 13         # 每条腿抬起/落下的子步数量
     cfg.env.err_threshold = 0.1
-    cfg.env.action_scale = [0.2, 0.8, 0.8] * 4  # 每条腿3个关节，共4条腿
+    cfg.env.action_scale = [0.5, 0.5, 0.5] * 4  # 每条腿3个关节，共4条腿
     cfg.env.reset2ref = True
     cfg.env.reference_state_init = False # RSI: Deepmimic
     cfg.env.impratio = 100
@@ -100,7 +100,7 @@ def default_config() -> config_dict.ConfigDict:
     cfg.rewards.scales.min_reference_tracking = -2.5 * 3e-3
     cfg.rewards.scales.reference_tracking = -10.0
     cfg.rewards.scales.feet_height = -10.0
-    cfg.rewards.scales.base_tracking = -1.0
+    cfg.rewards.scales.base_tracking = -2.0
     # 其他
     cfg.impl = "jax"
     cfg.nconmax = 4 * 8192
@@ -123,7 +123,7 @@ class TrotGo2(Go2Env):
         # default_xml = os.path.normpath(
         #     os.path.join(CURRENT_DIR, "xmls", "scene_mjx_collision_free.xml")
         # )
-        default_xml = consts.MJX_XML_PATH.as_posix()
+        default_xml = consts.MJX_XML_SENSOR_PATH.as_posix()
         super().__init__(
             xml_path=default_xml,
             config=config,

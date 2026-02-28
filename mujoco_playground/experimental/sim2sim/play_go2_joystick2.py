@@ -16,6 +16,21 @@ from mujoco_playground._src.locomotion.go2.TrotUtil import (
 _HERE = epath.Path(__file__).parent
 _ONNX_DIR = _HERE / "onnx"   
 
+_ACTUATED_JOINT_NAMES = [
+    "FL_hip_joint",
+    "FL_thigh_joint",
+    "FL_calf_joint",
+    "FR_hip_joint",
+    "FR_thigh_joint",
+    "FR_calf_joint",
+    "RL_hip_joint",
+    "RL_thigh_joint",
+    "RL_calf_joint",
+    "RR_hip_joint",
+    "RR_thigh_joint",
+    "RR_calf_joint",
+]
+
 
 class Go2Joystick2OnnxController:
     """Sim2sim controller aligned with JoystickGo2.py logic."""
@@ -146,6 +161,41 @@ class Go2Joystick2OnnxController:
         self._counter += 1
 
 
+def _print_joint_params(model: mujoco.MjModel) -> None:
+    print("\n[Joint Params] (before simulation)")
+    print(
+        "joint".ljust(18),
+        "damping".rjust(10),
+        "friction".rjust(10),
+        "armature".rjust(10),
+        "range".rjust(22),
+        "kp".rjust(10),
+        "kd".rjust(10),
+    )
+    for name in _ACTUATED_JOINT_NAMES:
+        j = model.joint(name)
+        jid = j.id
+        dof_id = j.dofadr[0]
+        aid = -1
+        for i in range(model.nu):
+            # Actuator i drives joint model.actuator_trnid[i, 0].
+            if model.actuator_trnid[i, 0] == jid:
+                aid = i
+                break
+        kp = model.actuator_gainprm[aid, 0] if aid >= 0 else np.nan
+        kd = -model.actuator_biasprm[aid, 2] if aid >= 0 else np.nan
+        print(
+            name.ljust(18),
+            f"{model.dof_damping[dof_id]:10.4f}",
+            f"{model.dof_frictionloss[dof_id]:10.4f}",
+            f"{model.dof_armature[dof_id]:10.4f}",
+            f"[{j.range[0]:.4f}, {j.range[1]:.4f}]".rjust(22),
+            f"{kp:10.4f}",
+            f"{kd:10.4f}",
+        )
+    print("")
+
+
 def load_callback(model=None, data=None):
     del model, data
     mujoco.set_mjcb_control(None)
@@ -168,6 +218,7 @@ def load_callback(model=None, data=None):
     model.dof_damping[6:] = kd
     model.actuator_gainprm[:, 0] = kp
     model.actuator_biasprm[:, 1] = -kp
+    _print_joint_params(model)
 
     controller = Go2Joystick2OnnxController(
         anchor_policy_path=(_ONNX_DIR / "go2_apg2_anchor_policy.onnx").as_posix(),
@@ -176,7 +227,7 @@ def load_callback(model=None, data=None):
         ctrl_dt=ctrl_dt,
         n_substeps=n_substeps,
         action_scale=np.array([0.5, 0.5, 0.5] * 4, dtype=np.float32),
-        command=np.array([1.0, -0.5, -0.5], dtype=np.float32),
+        command=np.array([0.0, 0.0, 0.0], dtype=np.float32),
     )
 
     mujoco.set_mjcb_control(controller.get_control)
