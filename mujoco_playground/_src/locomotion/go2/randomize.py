@@ -73,6 +73,21 @@ def domain_randomize(model: mjx.Model, rng: jax.Array):
             + jax.random.uniform(key, shape=(12,), minval=-0.05, maxval=0.05)
         )
 
+        # Randomize PD gains (unitree_rl_gym_go2_robust):
+        # kp_scale, kd_scale = U(0.75, 1.25).
+        rng, key = jax.random.split(rng)
+        kp = model.actuator_gainprm[:, 0] * jax.random.uniform(
+            key, (model.nu,), minval=0.9, maxval=1.1
+        )
+        actuator_gainprm = model.actuator_gainprm.at[:, 0].set(kp)
+        actuator_biasprm = model.actuator_biasprm.at[:, 1].set(-kp)
+
+        rng, key = jax.random.split(rng)
+        kd = model.dof_damping[6:] * jax.random.uniform(
+            key, shape=(model.nv - 6,), minval=0.75, maxval=1.25
+        )
+        dof_damping = model.dof_damping.at[6:].set(kd)
+
         return (
             geom_friction,
             body_ipos,
@@ -80,6 +95,9 @@ def domain_randomize(model: mjx.Model, rng: jax.Array):
             qpos0,
             dof_frictionloss,
             dof_armature,
+            actuator_gainprm,
+            actuator_biasprm,
+            dof_damping,
         )
 
     (
@@ -89,6 +107,9 @@ def domain_randomize(model: mjx.Model, rng: jax.Array):
         qpos0,
         dof_frictionloss,
         dof_armature,
+        actuator_gainprm,
+        actuator_biasprm,
+        dof_damping,
     ) = rand_dynamics(rng)
 
     in_axes = jax.tree_util.tree_map(lambda x: None, model)
@@ -99,6 +120,9 @@ def domain_randomize(model: mjx.Model, rng: jax.Array):
         "qpos0": 0,
         "dof_frictionloss": 0,
         "dof_armature": 0,
+        "actuator_gainprm": 0,
+        "actuator_biasprm": 0,
+        "dof_damping": 0,
     })
 
     model = model.tree_replace({
@@ -108,6 +132,9 @@ def domain_randomize(model: mjx.Model, rng: jax.Array):
         "qpos0": qpos0,
         "dof_frictionloss": dof_frictionloss,
         "dof_armature": dof_armature,
+        "actuator_gainprm": actuator_gainprm,
+        "actuator_biasprm": actuator_biasprm,
+        "dof_damping": dof_damping,
     })
 
     return model, in_axes

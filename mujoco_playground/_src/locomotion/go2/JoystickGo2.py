@@ -70,9 +70,9 @@ def default_config() -> config_dict.ConfigDict:
     cfg.rewards.scales.feet_height = -2.0
     
     # Smoothness & Physics (新增)
-    cfg.rewards.scales.lin_vel_z = -2.0
+    cfg.rewards.scales.lin_vel_z = -0.5
     cfg.rewards.scales.ang_vel_xy = -0.05
-    cfg.rewards.scales.orientation = -1.0
+    cfg.rewards.scales.orientation = -10.0
     cfg.rewards.scales.torques = -0.0002
     cfg.rewards.scales.action_rate = -0.01
     cfg.rewards.scales.energy = -0.001
@@ -192,21 +192,21 @@ class JoystickGo2(Go2Env):
         qpos = self._init_q
         qvel = jp.zeros(self.mjx_model.nv)
         
-        # x=+U(-0.5, 0.5), y=+U(-0.5, 0.5), yaw=U(-3.14, 3.14).
-        rng, key = jax.random.split(rng)
-        dxy = jax.random.uniform(key, (2,), minval=-0.5, maxval=0.5)
-        qpos = qpos.at[0:2].set(qpos[0:2] + dxy)
-        rng, key = jax.random.split(rng)
-        yaw = jax.random.uniform(key, (1,), minval=-3.14, maxval=3.14)
-        quat = math.axis_angle_to_quat(jp.array([0, 0, 1]), yaw)
-        new_quat = math.quat_mul(qpos[3:7], quat)
-        qpos = qpos.at[3:7].set(new_quat)
+        # # x=+U(-0.5, 0.5), y=+U(-0.5, 0.5), yaw=U(-3.14, 3.14).
+        # rng, key = jax.random.split(rng)
+        # dxy = jax.random.uniform(key, (2,), minval=-0.5, maxval=0.5)
+        # qpos = qpos.at[0:2].set(qpos[0:2] + dxy)
+        # rng, key = jax.random.split(rng)
+        # yaw = jax.random.uniform(key, (1,), minval=-3.14, maxval=3.14)
+        # quat = math.axis_angle_to_quat(jp.array([0, 0, 1]), yaw)
+        # new_quat = math.quat_mul(qpos[3:7], quat)
+        # qpos = qpos.at[3:7].set(new_quat)
 
-        # d(xyzrpy)=U(-0.5, 0.5)
-        rng, key = jax.random.split(rng)
-        qvel = qvel.at[0:6].set(
-            jax.random.uniform(key, (6,), minval=-0.5, maxval=0.5)
-        )
+        # # d(xyzrpy)=U(-0.5, 0.5)
+        # rng, key = jax.random.split(rng)
+        # qvel = qvel.at[0:6].set(
+        #     jax.random.uniform(key, (6,), minval=-0.5, maxval=0.5)
+        # )
 
         data = mjx_env.make_data(self.mj_model, qpos=qpos, qvel=qvel, ctrl=jp.zeros(12),
                                  impl=self.mjx_model.impl.value, 
@@ -338,15 +338,13 @@ class JoystickGo2(Go2Env):
         # 6. Rewards & Termination (修改逻辑)
         up_z = self.get_upvector(data)[-1]
         
-        # Hard Termination (翻车保护 + 飞天保护)
-        fall_termination = up_z < 0.0
-        base_z = data.xpos[self.base_id, 2]
-        # height_termination = (base_z < 0.05) | (base_z > 0.8)
-        height_termination = base_z > 1.0
-        done = jp.where(fall_termination | height_termination, 1.0, 0.0)
+        # Hard Termination (翻车保护)
+        tilt_threshold = jp.cos(jp.deg2rad(45.0))
+        fall_termination = up_z < tilt_threshold
+        done = jp.where(fall_termination, 1.0, 0.0)
         
         # Soft Done
-        soft_done = jax.nn.sigmoid((0.25 - up_z) * 20.0) 
+        soft_done = jax.nn.sigmoid((tilt_threshold - up_z) * 100.0)
 
         reward_kwargs = {
             'first_contact': first_contact,
