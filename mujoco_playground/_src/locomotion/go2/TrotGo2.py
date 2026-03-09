@@ -81,7 +81,8 @@ def default_config() -> config_dict.ConfigDict:
     # 环境超参
     cfg.env = config_dict.ConfigDict()
     cfg.env.termination_height = 0.1
-    cfg.env.step_k = 13         # 每条腿抬起/落下的子步数量
+    cfg.env.step_k = consts.STEP_K            # 每条腿抬起/落下的子步数量
+    cfg.env.gait_scale = consts.GAIT_SCALE    # 运动学参考摆腿幅值（影响抬脚高度）
     cfg.env.err_threshold = 0.1
     cfg.env.action_scale = [0.5, 0.5, 0.5] * 4  # 每条腿3个关节，共4条腿
     cfg.env.reset2ref = True
@@ -100,7 +101,7 @@ def default_config() -> config_dict.ConfigDict:
     cfg.rewards.scales.min_reference_tracking = -2.5 * 3e-3
     cfg.rewards.scales.reference_tracking = -10.0
     cfg.rewards.scales.feet_height = -10.0
-    cfg.rewards.scales.base_tracking = -2.0
+    cfg.rewards.scales.base_tracking = -1.0
     # 其他
     cfg.impl = "jax"
     cfg.nconmax = 4 * 8192
@@ -155,8 +156,9 @@ class TrotGo2(Go2Env):
 
         # imitation reference
         step_k = int(getattr(self._config.env, "step_k", 25))
-        kinematic_ref_qpos = make_kinematic_ref(cos_wave, step_k, scale=0.3, dt=self.dt)
-        kinematic_ref_qvel = make_kinematic_ref(dcos_wave, step_k, scale=0.3, dt=self.dt)
+        gait_scale = float(getattr(self._config.env, "gait_scale", 0.3))
+        kinematic_ref_qpos = make_kinematic_ref(cos_wave, step_k, scale=gait_scale, dt=self.dt)
+        kinematic_ref_qvel = make_kinematic_ref(dcos_wave, step_k, scale=gait_scale, dt=self.dt)
         self.l_cycle = int(kinematic_ref_qpos.shape[0])
 
         kinematic_ref_qpos = np.array(kinematic_ref_qpos) + np.array(self._default_ap_pose)
@@ -482,4 +484,3 @@ class TrotGo2(Go2Env):
 #     TrotAnymal,     # 环境类
 #     default_config      # 默认配置函数
 # )
-
