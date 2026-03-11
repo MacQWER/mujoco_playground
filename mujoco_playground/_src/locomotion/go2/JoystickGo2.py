@@ -48,12 +48,12 @@ def default_config() -> config_dict.ConfigDict:
     
     # 2. 指令配置
     cfg.command_config = config_dict.ConfigDict()
-    cfg.command_config.a = [1.5, 0.80, 1.2]
-    cfg.command_config.b = [0.9, 0.25, 0.5]
+    cfg.command_config.a = [1.0, 0.4, 1.0]
+    cfg.command_config.b = [0.9, 0.8, 0.5]
 
     # 3. Disturbance 配置 (新增)
     cfg.disturbance = config_dict.ConfigDict()
-    cfg.disturbance.enable = False
+    cfg.disturbance.enable = True
     cfg.disturbance.velocity_kick = [0.0, 3.0]
     cfg.disturbance.kick_durations = [0.05, 0.2]
     cfg.disturbance.kick_wait_times = [1.0, 3.0]
@@ -69,12 +69,12 @@ def default_config() -> config_dict.ConfigDict:
     # Anchor Heuristics
     cfg.rewards.scales.feet_pos_xy = -1.0
     cfg.rewards.scales.feet_vel_xy = -0.5
-    cfg.rewards.scales.feet_height = -2.0
+    cfg.rewards.scales.feet_height = -5.0
     
     # Smoothness & Physics (新增)
     cfg.rewards.scales.lin_vel_z = -0.5
     cfg.rewards.scales.ang_vel_xy = -0.05
-    cfg.rewards.scales.orientation = -10.0
+    cfg.rewards.scales.orientation = -5.0
     cfg.rewards.scales.torques = -0.0002
     cfg.rewards.scales.action_rate = -0.05
     cfg.rewards.scales.energy = -0.001
