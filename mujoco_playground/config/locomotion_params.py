@@ -105,6 +105,39 @@ def brax_apg_config(
         hidden_layer_sizes=(256, 128),
         policy_obs_key="state",
     )
+    # Symmetry loss for JoystickGo2 residual policy.
+    # Obs layout (48): v(3), w(3), g(3), cmd(3), qpos(12), qvel(12), anchor_action(12)
+    # Action layout (12): [FL, FR, RL, RR] x [hip, thigh, calf]
+    # Signed permutation encoding:
+    #   new[i] = sign(perm[i]) * old[floor(abs(perm[i]) + 1e-3)]
+    # Use -0.0001 to represent "- index 0".
+    rl_config.sym_loss = True
+    rl_config.sym_coef = 1.0
+    rl_config.sym_obs_key = "state"
+    rl_config.obs_permutation = (
+        0.0001,  -1.0,  2.0,  # lin vel
+       -3.0,  4.0, -5.0,      # ang vel
+        6.0,  -7.0,  8.0,     # gravity
+        9.0, -10.0, -11.0,    # command [vx, vy, wz]
+      -15.0, 16.0, 17.0,      # qpos FL <- FR
+      -12.0, 13.0, 14.0,      # qpos FR <- FL
+      -21.0, 22.0, 23.0,      # qpos RL <- RR
+      -18.0, 19.0, 20.0,      # qpos RR <- RL
+      -27.0, 28.0, 29.0,      # qvel FL <- FR
+      -24.0, 25.0, 26.0,      # qvel FR <- FL
+      -33.0, 34.0, 35.0,      # qvel RL <- RR
+      -30.0, 31.0, 32.0,      # qvel RR <- RL
+      -39.0, 40.0, 41.0,      # anchor FL <- FR
+      -36.0, 37.0, 38.0,      # anchor FR <- FL
+      -45.0, 46.0, 47.0,      # anchor RL <- RR
+      -42.0, 43.0, 44.0,      # anchor RR <- RL
+    )
+    rl_config.act_permutation = (
+      -3.0, 4.0, 5.0,         # FL <- FR
+      -0.0001, 1.0, 2.0,      # FR <- FL  (negative sign on source index 0)
+      -9.0, 10.0, 11.0,       # RL <- RR
+      -6.0, 7.0, 8.0,         # RR <- RL
+    )
   else:
     raise ValueError(f"Unsupported env: {env_name}")
 
