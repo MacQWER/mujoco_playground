@@ -106,7 +106,7 @@ def brax_apg_config(
         policy_obs_key="state",
     )
     # Symmetry loss for JoystickGo2 residual policy.
-    # Obs layout (48): v(3), w(3), g(3), cmd(3), qpos(12), qvel(12), anchor_action(12)
+    # Obs layout (60): v(3), w(3), g(3), cmd(3), qpos(12), qvel(12), last_action(12), anchor_action(12)
     # Action layout (12): [FL, FR, RL, RR] x [hip, thigh, calf]
     # Signed permutation encoding:
     #   new[i] = sign(perm[i]) * old[floor(abs(perm[i]) + 1e-3)]
@@ -127,10 +127,14 @@ def brax_apg_config(
       -24.0, 25.0, 26.0,      # qvel FR <- FL
       -33.0, 34.0, 35.0,      # qvel RL <- RR
       -30.0, 31.0, 32.0,      # qvel RR <- RL
-      -39.0, 40.0, 41.0,      # anchor FL <- FR
-      -36.0, 37.0, 38.0,      # anchor FR <- FL
-      -45.0, 46.0, 47.0,      # anchor RL <- RR
-      -42.0, 43.0, 44.0,      # anchor RR <- RL
+      -39.0, 40.0, 41.0,      # last_action FL <- FR
+      -36.0, 37.0, 38.0,      # last_action FR <- FL
+      -45.0, 46.0, 47.0,      # last_action RL <- RR
+      -42.0, 43.0, 44.0,      # last_action RR <- RL
+      -51.0, 52.0, 53.0,      # anchor FL <- FR
+      -48.0, 49.0, 50.0,      # anchor FR <- FL
+      -57.0, 58.0, 59.0,      # anchor RL <- RR
+      -54.0, 55.0, 56.0,      # anchor RR <- RL
     )
     rl_config.act_permutation = (
       -3.0, 4.0, 5.0,         # FL <- FR

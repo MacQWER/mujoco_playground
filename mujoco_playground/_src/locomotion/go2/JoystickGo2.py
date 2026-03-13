@@ -48,13 +48,13 @@ def default_config() -> config_dict.ConfigDict:
     
     # 2. 指令配置
     cfg.command_config = config_dict.ConfigDict()
-    cfg.command_config.a = [1.0, 0.4, 1.0]
-    cfg.command_config.b = [0.9, 0.8, 0.5]
+    cfg.command_config.a = [1.0, 0.5, 1.0]
+    cfg.command_config.b = [0.8, 0.8, 0.8]
 
     # 3. Disturbance 配置 (新增)
     cfg.disturbance = config_dict.ConfigDict()
     cfg.disturbance.enable = True
-    cfg.disturbance.velocity_kick = [0.0, 3.0]
+    cfg.disturbance.velocity_kick = [0.0, 1.0]
     cfg.disturbance.kick_durations = [0.05, 0.2]
     cfg.disturbance.kick_wait_times = [1.0, 3.0]
     
@@ -623,22 +623,23 @@ class JoystickGo2(Go2Env):
         g_local = self._apply_obs_noise(
             info, g_local, self._config.noise_config.scales.gravity
         )
+        angles = data.qpos[7:19]
+        angles = self._apply_obs_noise(
+            info, angles, self._config.noise_config.scales.joint_pos,
+        )
+        joint_vels = data.qvel[6:]
+        joint_vels = self._apply_obs_noise(
+            info, joint_vels, self._config.noise_config.scales.joint_vel,
+        )
         
         obs_list = [
             v_local,          # 3
             w_local,          # 3
             g_local,          # 3
             info['command'],  # 3 (Vx, Vy, Wz)
-            self._apply_obs_noise(
-                info,
-                data.qpos[7:19],
-                self._config.noise_config.scales.joint_pos,
-            ) - self._default_ap_pose, # 12
-            self._apply_obs_noise(
-                info,
-                data.qvel[6:],
-                self._config.noise_config.scales.joint_vel,
-            ),    # 12
+            angles - self._default_ap_pose, # 12
+            joint_vels,    # 12
+            info['last_action'], # 12
             info['anchor_action'], # 12 (让 Agent 知道 Anchor 想做什么)
         ]
         return jp.clip(jp.concatenate(obs_list), -100.0, 100.0)
