@@ -33,6 +33,7 @@ def default_config() -> config_dict.ConfigDict:
     cfg.env.action_scale = [0.5, 0.5, 0.5] * 4 
     cfg.env.step_k = consts.STEP_K
     cfg.env.gait_scale = consts.GAIT_SCALE
+    cfg.env.raibert_k = 0.2
     cfg.env.impratio = 100
     cfg.env.iterations = 1
 
@@ -63,8 +64,8 @@ def default_config() -> config_dict.ConfigDict:
     cfg.rewards.scales = config_dict.ConfigDict()
     
     # Tracking
-    cfg.rewards.scales.tracking_lin_vel = 1.5
-    cfg.rewards.scales.tracking_ang_vel = 1.0
+    cfg.rewards.scales.tracking_lin_vel = 3.0
+    cfg.rewards.scales.tracking_ang_vel = 2.0
     
     # Anchor Heuristics
     cfg.rewards.scales.feet_pos_xy = -1.0
@@ -88,7 +89,7 @@ def default_config() -> config_dict.ConfigDict:
     cfg.rewards.scales.termination = -10.0  # Soft termination
     
     cfg.rewards.tracking_sigma = 0.25
-    cfg.rewards.max_foot_height = 0.10
+    cfg.rewards.max_foot_height = 0.075
     cfg.soft_joint_pos_limit_factor = 0.95
 
     # 5. Anchor 配置
@@ -165,6 +166,7 @@ class JoystickGo2(Go2Env):
         self.step_k = step_k
         self.gait_scale = gait_scale
         self.gait_period = step_k * 2 * self.dt
+        self.raibert_k = float(getattr(self._config.env, "raibert_k", 0.2))
         
         # 5. Kinematic Reference
         kinematic_ref_qpos = make_kinematic_ref(cos_wave, step_k, scale=gait_scale, dt=self.dt)
@@ -225,7 +227,7 @@ class JoystickGo2(Go2Env):
         """
         step = info['step']
         swing_period = self.gait_period / 2.0
-        dt_step = (step - info['k0']) * self.dt
+        dt_step = (step - info['k0'] + 1) * self.dt
         phi = jp.clip(dt_step / swing_period, 0.0, 1.0)
 
         s = phi - jp.sin(2.0 * jp.pi * phi) / (2.0 * jp.pi)
@@ -386,7 +388,7 @@ class JoystickGo2(Go2Env):
         # 3. 状态更新 (新增逻辑)
         foot_pos = data.site_xpos[self._feet_site_id]
         foot_z = foot_pos[..., -1]
-        contact = jax.nn.sigmoid((0.02 - foot_z) * 50.0) 
+        contact = jax.nn.sigmoid((0.025 - foot_z) * 100.0) 
         
         delta_contact = jax.nn.relu(contact - state.info["last_contact"])
         first_contact = (state.info["feet_air_time"] > 0.0) * delta_contact
@@ -658,32 +660,53 @@ class JoystickGo2(Go2Env):
         new_step = (s % step_k == 0)
         even_step = ((s // step_k) % 2 == 0)
         
-        # 1. 解析指令
+        # 1. Parse command and actual velocities
         v_cmd_local = info['command'][:2]
         w_cmd_local = info['command'][2]
         
-        # 2. 计算旋转引起的线速度分量 (v = w x r)
-        # 使用 _post_init 中自动计算的偏移量，不再硬编码
-        v_rot_x = -w_cmd_local * self.leg_offsets_y
-        v_rot_y =  w_cmd_local * self.leg_offsets_x
+        quat = data.xquat[1]
+        v_base_local = rotate_inv(data.cvel[1, 3:], quat)[:2]
+        w_base_local = rotate_inv(data.cvel[1, :3], quat)[2]
 
-        # 3. 合成局部线速度
+        # 2. Feedforward: Kinematic drift prediction using ACTUAL velocities
+        v_ff_rot_x = -w_base_local * self.leg_offsets_y
+        v_ff_rot_y =  w_base_local * self.leg_offsets_x
+
         v_leg_local = jp.stack([
-            v_cmd_local[0] + v_rot_x,
-            v_cmd_local[1] + v_rot_y
+            v_base_local[0] + v_ff_rot_x,
+            v_base_local[1] + v_ff_rot_y
         ], axis=1)
 
-        # 4. 旋转到世界坐标系
-        # 使用 vmap 批量旋转 4 条腿的速度向量
-        quat = data.xquat[1]
-        v_leg_local_3d = jp.concatenate([v_leg_local, jp.zeros((4, 1))], axis=1)
-        v_leg_global = jax.vmap(rotate, in_axes=(0, None))(v_leg_local_3d, quat)[:, :2]
+        # 3. Feedback: Linear + Angular velocity errors
+        # Yaw rate error: w_actual - w_cmd
+        w_err = w_base_local - w_cmd_local
+        
+        # Rotational velocity error at each hip
+        v_fb_rot_x = -w_err * self.leg_offsets_y
+        v_fb_rot_y =  w_err * self.leg_offsets_x
+        
+        # Combine linear and angular feedback for each leg (Shape: 4 x 2)
+        v_fb_local = jp.stack([
+            (v_base_local[0] - v_cmd_local[0]) + v_fb_rot_x,
+            (v_base_local[1] - v_cmd_local[1]) + v_fb_rot_y
+        ], axis=1) 
 
-        # 5. 计算 Raibert 落点 (Hip-Centric)
-        # 物理公式: Target = Hip + (T_stance / 2) * v
-        # 在 Trot 中 T_stance = T_cycle / 2, 所以系数是 T_cycle / 4
+        # 4. Global rotation
+        # Now both v_leg_local and v_fb_local are shape (4, 2)
+        v_leg_local_3d = jp.concatenate([v_leg_local, jp.zeros((4, 1))], axis=1)
+        v_fb_local_3d = jp.concatenate([v_fb_local, jp.zeros((4, 1))], axis=1)
+
+        # vmap applies the rotation to all 4 legs simultaneously
+        v_leg_global = jax.vmap(rotate, in_axes=(0, None))(v_leg_local_3d, quat)[:, :2]
+        v_fb_global = jax.vmap(rotate, in_axes=(0, None))(v_fb_local_3d, quat)[:, :2]
+
+        # 5. Calculate Raibert target (Mid-stance projection)
         hip_pos = data.xpos[self.hip_inds][:, :2] 
-        raibert_offset = (self.gait_period / 4.0) * v_leg_global
+        t_stance = self.gait_period / 2.0
+        t_swing = self.gait_period / 2.0
+        
+        # Fully combined: Actual drift FF + Linear/Angular Error FB
+        raibert_offset = (t_swing + 0.5 * t_stance) * v_leg_global + self.raibert_k * v_fb_global
         raibert_xy = hip_pos + raibert_offset
         
         # 6. 更新目标 (Phase Alignment)
