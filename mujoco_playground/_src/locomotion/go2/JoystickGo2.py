@@ -10,6 +10,7 @@ from ml_collections import config_dict
 from brax.io import model
 
 import matplotlib.pyplot as plt
+import mediapy as media
 
 from mujoco_playground._src import mjx_env
 from mujoco_playground._src.locomotion.go2.base import Go2Env
@@ -30,10 +31,14 @@ def default_config() -> config_dict.ConfigDict:
     cfg.episode_length = 240
     
     cfg.env = config_dict.ConfigDict()
-    cfg.env.action_scale = [0.5, 0.5, 0.5] * 4 
+    cfg.env.anchor_action_scale = [0.5, 0.5, 0.5] * 4
+    cfg.env.residual_action_scale = [1.0, 0.5, 0.5] * 4
     cfg.env.step_k = consts.STEP_K
     cfg.env.gait_scale = consts.GAIT_SCALE
-    cfg.env.raibert_k = 0.2
+    cfg.env.raibert_k = 0.5
+    cfg.env.step_height = 0.1128  # max peak cycloid height (cap)
+    cfg.env.step_height_min = 0.0
+    cfg.env.foot_traj_vel_weight = 0.2
     cfg.env.impratio = 100
     cfg.env.iterations = 1
 
@@ -49,8 +54,8 @@ def default_config() -> config_dict.ConfigDict:
     
     # 2. 指令配置
     cfg.command_config = config_dict.ConfigDict()
-    cfg.command_config.a = [1.0, 0.5, 1.0]
-    cfg.command_config.b = [0.8, 0.8, 0.8]
+    cfg.command_config.a = [0.5, 0.2, 0.5]
+    cfg.command_config.b = [1.0, 1.0, 1.0]
 
     # 3. Disturbance 配置 (新增)
     cfg.disturbance = config_dict.ConfigDict()
@@ -64,18 +69,16 @@ def default_config() -> config_dict.ConfigDict:
     cfg.rewards.scales = config_dict.ConfigDict()
     
     # Tracking
-    cfg.rewards.scales.tracking_lin_vel = 3.0
-    cfg.rewards.scales.tracking_ang_vel = 2.0
+    cfg.rewards.scales.tracking_lin_vel = 1.5
+    cfg.rewards.scales.tracking_ang_vel = 1.0
     
     # Anchor Heuristics
-    cfg.rewards.scales.feet_pos_xy = -1.0
-    cfg.rewards.scales.feet_vel_xy = -0.5
-    cfg.rewards.scales.feet_height = -5.0
+    cfg.rewards.scales.feet_traj = -5.0
     
     # Smoothness & Physics (新增)
     cfg.rewards.scales.lin_vel_z = -0.5
     cfg.rewards.scales.ang_vel_xy = -0.05
-    cfg.rewards.scales.orientation = -5.0
+    cfg.rewards.scales.orientation = -10.0
     cfg.rewards.scales.torques = -0.0002
     cfg.rewards.scales.action_rate = -0.05
     cfg.rewards.scales.energy = -0.001
@@ -135,7 +138,8 @@ class JoystickGo2(Go2Env):
         self._default_ap_pose = jp.array(self._mj_model.keyframe("home").qpos[7:].copy())
         
         self.action_loc = jp.array(self._default_ap_pose)
-        self.action_scale = jp.array(self._config.env.action_scale) 
+        self.anchor_action_scale = jp.array(self._config.env.anchor_action_scale)
+        self.residual_action_scale = jp.array(self._config.env.residual_action_scale)
         
         self.base_id = mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_BODY, "base")
         self.feet_inds = jp.array([self._mj_model.geom(name).id for name in consts.FEET_GEOMS])
@@ -176,7 +180,6 @@ class JoystickGo2(Go2Env):
         ref_qs = np.tile(self._init_q.reshape(1, 19), (self.l_cycle, 1))
         ref_qs[:, 7:] = kinematic_ref_qpos
         self.kinematic_ref_qpos = jp.array(ref_qs)
-        self.kinematic_ref_feet_z = self._build_ref_feet_height_targets()
         
         # 6. Command & Raibert Offset
         self._cmd_a = jp.array(self._config.command_config.a)
@@ -190,26 +193,22 @@ class JoystickGo2(Go2Env):
         rel_pos = hip_pos - base_pos
         self.leg_offsets_x = rel_pos[:, 0]
         self.leg_offsets_y = rel_pos[:, 1]
+
+        # Hip -> foot lateral offset in base local frame
+        foot_pos = d.site_xpos[self._feet_site_id]
+        base_quat = d.xquat[self.base_id]
+        hip_local = jax.vmap(rotate_inv, in_axes=(0, None))(hip_pos - base_pos, base_quat)
+        foot_local = jax.vmap(rotate_inv, in_axes=(0, None))(foot_pos - base_pos, base_quat)
+        foot_offset_local = foot_local - hip_local
+        self.foot_offsets_xy = foot_offset_local[:, :2]
+
         self.base_mass = self.mj_model.body("base").mass
 
-    def _build_ref_feet_height_targets(self):
-        """Build per-step feet height targets from the actual MJX model reference."""
-        ref_feet_z = []
-        zero_qvel = jp.zeros(self.mjx_model.nv)
-        zero_ctrl = jp.zeros(self.mjx_model.nu)
-        for i in range(self.l_cycle):
-            ref_data = mjx_env.make_data(
-                self.mj_model,
-                qpos=self.kinematic_ref_qpos[i],
-                qvel=zero_qvel,
-                ctrl=zero_ctrl,
-                impl=self.mjx_model.impl.value,
-                nconmax=self._config.nconmax,
-                njmax=self._config.njmax,
-            )
-            ref_data = mjx.forward(self.mjx_model, ref_data)
-            ref_feet_z.append(np.array(ref_data.geom_xpos[self.feet_inds][:, 2]))
-        return jp.array(np.stack(ref_feet_z, axis=0))
+        # Step height parameters (coupled to step length; capped)
+        self._step_height_max = float(getattr(self._config.env, "step_height", 0.1128))
+        self._step_height_min = float(getattr(self._config.env, "step_height_min", 0.0))
+        self._foot_traj_vel_weight = float(getattr(self._config.env, "foot_traj_vel_weight", 0.2))
+
 
     def _get_swing_mask(self, step):
         """Return swing mask (4,) for FL, FR, RL, RR at current phase block."""
@@ -227,7 +226,7 @@ class JoystickGo2(Go2Env):
         """
         step = info['step']
         swing_period = self.gait_period / 2.0
-        dt_step = (step - info['k0'] + 1) * self.dt
+        dt_step = (step - info['k0']) * self.dt
         phi = jp.clip(dt_step / swing_period, 0.0, 1.0)
 
         s = phi - jp.sin(2.0 * jp.pi * phi) / (2.0 * jp.pi)
@@ -247,8 +246,17 @@ class JoystickGo2(Go2Env):
         xy_ref = xy0 * (1.0 - swing_mask_col) + xy_ref * swing_mask_col
         v_xy_ref = v_xy_ref * swing_mask_col
 
-        step_idx = jp.array(step % self.l_cycle, int)
-        z_ref = self.kinematic_ref_feet_z[step_idx]
+        # Cycloid height coupled to step length (2*pi*r = step length)
+        step_len = jp.linalg.norm(delta_xy, axis=1)
+        r = step_len / (2.0 * jp.pi)
+        r_min = 0.5 * self._step_height_min
+        r_max = 0.5 * self._step_height_max
+        r = jp.clip(r, r_min, r_max)
+
+        z0 = info['z0']
+        z_ref = z0 + r * (1.0 - jp.cos(2.0 * jp.pi * phi))
+        z_ref = z0 * (1.0 - swing_mask) + z_ref * swing_mask
+
         ref_pos = jp.concatenate([xy_ref, z_ref[:, None]], axis=1)
 
         info['foot_phase'] = jax.lax.stop_gradient(phi)
@@ -342,6 +350,7 @@ class JoystickGo2(Go2Env):
             'foot_ref_xy': feet_pos,
             'foot_ref_z': data.geom_xpos[self.feet_inds][:, 2],
             'foot_ref_pos': jp.concatenate([feet_pos, data.geom_xpos[self.feet_inds][:, 2:3]], axis=1),
+            'z0': data.site_xpos[self._feet_site_id][:, 2],
             'foot_ref_v_xy': jp.zeros((4, 2)),
             'anchor_action': jp.zeros(12),
             'steps_until_next_pert': steps_until_next_pert,
@@ -369,7 +378,7 @@ class JoystickGo2(Go2Env):
         reward, done = jp.zeros(2)
         metrics = state_info['reward_tuple'].copy()
         
-        return mjx_env.State(data, {'state': residual_obs}, reward, done, metrics, state_info)
+        return mjx_env.State(data, residual_obs, reward, done, metrics, state_info)
 
     # -------- Step --------
     def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
@@ -379,8 +388,8 @@ class JoystickGo2(Go2Env):
         # 1. Action Mixing
         action = jp.clip(action, -1.0, 1.0)
         anchor_act = state.info['anchor_action']
-        mixed_action = anchor_act + action 
-        ctrl = self.action_loc + (mixed_action * self.action_scale)
+        mixed_action = anchor_act * self.anchor_action_scale + action * self.residual_action_scale
+        ctrl = self.action_loc + mixed_action
         
         # 2. Physics Step
         data = mjx_env.step(self.mjx_model, state.data, ctrl, self.n_substeps)
@@ -447,10 +456,10 @@ class JoystickGo2(Go2Env):
             state.metrics[k] = v
         state.info['reward_tuple'] = reward_dict
 
-        # 7. Obs
+        # 7. Obs (dict)
         residual_obs = self._get_residual_obs(data, state.info)
         
-        return state.replace(data=data, obs={'state': residual_obs}, reward=reward, done=done)
+        return state.replace(data=data, obs=residual_obs, reward=reward, done=done)
 
     # ----------------- Disturbance -----------------
     def _maybe_apply_perturbation(self, state: mjx_env.State) -> mjx_env.State:
@@ -564,53 +573,11 @@ class JoystickGo2(Go2Env):
         )
         return x + noise
     
-    def _get_anchor_obs(self, data, info):
+    def _get_obs(self, data, info):
         """
-        生成 Anchor Policy 需要的 Obs。
-        必须严格模仿 TrotGo2 的 obs 结构：
-        [yaw_rate(1), g_local(3), joints(12), last_action(12), kin_ref(12)] = 40 dims
-        """
-        q = data.xquat[1]
-        local_omega = data.cvel[1, :3]
-        yaw_rate = rotate_inv(local_omega, q)[2]
-        yaw_rate = self._apply_obs_noise(
-            info, yaw_rate, self._config.noise_config.scales.gyro
-        )
-        
-        g_local = rotate_inv(jp.array([0., 0., -1.]), q)
-        g_local = self._apply_obs_noise(
-            info, g_local, self._config.noise_config.scales.gravity
-        )
-        angles = data.qpos[7:19]
-        angles = self._apply_obs_noise(
-            info, angles, self._config.noise_config.scales.joint_pos
-        )
-        
-        # 注意: TrotGo2 使用的是上一帧输出的 raw action (scaled 之前还是之后? 通常是 normalized)
-        # 但在 TrotGo2 代码中: obs_list.append(last_action) 且 state.info["last_action"] = ctrl
-        # 如果 TrotGo2 的 last_action 是 ctrl (物理值)，这里也要用 ctrl。
-        # 根据提供的 TrotGo2.py: state.info["last_action"] = ctrl (Line 183)
-        last_action = info['last_action'] 
-        
-        # 生成 Reference (相位信息)
-        step_idx = jp.array(info['step'] % self.l_cycle, int)
-        kin_ref = self.kinematic_ref_qpos[step_idx][7:]
-        
-        obs_list = [
-            jp.array([yaw_rate]) * 0.25, # TrotGo2 的 scaling
-            g_local,
-            angles - self._default_ap_pose,
-            last_action, 
-            kin_ref
-        ]
-        obs_vec = jp.clip(jp.concatenate(obs_list), -100.0, 100.0)
-
-        return {"state": obs_vec}
-
-    def _get_residual_obs(self, data, info):
-        """
-        生成 Residual Policy (Agent) 的 Obs。
-        包含了 Command 和 Anchor Action。
+        Unified observation (aligned with TrotGo2):
+        Order (72 dims): v_local(3), w_local(3), g_local(3), command(3),
+        angles(12), joint_vels(12), last_action(12), kin_ref(12), anchor_action(12).
         """
         q = data.xquat[1]
         v_local = rotate_inv(data.cvel[1, 3:], q)
@@ -633,18 +600,38 @@ class JoystickGo2(Go2Env):
         joint_vels = self._apply_obs_noise(
             info, joint_vels, self._config.noise_config.scales.joint_vel,
         )
-        
+        last_action = info['last_action']
+        step_idx = jp.array(info['step'] % self.l_cycle, int)
+        kin_ref = self.kinematic_ref_qpos[step_idx][7:]
+        command = info['command']
+        anchor_action = info['anchor_action']
+
         obs_list = [
-            v_local,          # 3
-            w_local,          # 3
-            g_local,          # 3
-            info['command'],  # 3 (Vx, Vy, Wz)
+            v_local,                        # 3
+            w_local,                        # 3
+            g_local,                        # 3
+            command,                        # 3 (Vx, Vy, Wz)
             angles - self._default_ap_pose, # 12
-            joint_vels,    # 12
-            info['last_action'], # 12
-            info['anchor_action'], # 12 (让 Agent 知道 Anchor 想做什么)
+            joint_vels,                     # 12
+            last_action,                    # 12
+            kin_ref,                        # 12
+            anchor_action,                  # 12
         ]
-        return jp.clip(jp.concatenate(obs_list), -100.0, 100.0)
+        obs = jp.clip(jp.concatenate(obs_list), -100.0, 100.0)
+        return {"state": obs}
+
+    def _get_anchor_obs(self, data, info):
+        obs_dict = self._get_obs(data, info)
+        obs = obs_dict["state"]
+        # Mask command (indices 9 to 11)
+        obs = obs.at[9:12].set(0.0)
+        # Mask anchor_action (indices 60 to 71)
+        obs = obs.at[60:72].set(0.0)
+        
+        return {"state": obs}
+
+    def _get_residual_obs(self, data, info):
+        return self._get_obs(data, info)
 
     # -------- Helpers --------
 
@@ -659,81 +646,65 @@ class JoystickGo2(Go2Env):
         step_k = self.step_k
         new_step = (s % step_k == 0)
         even_step = ((s // step_k) % 2 == 0)
-        
-        # 1. Parse command and actual velocities
+
+        # 1. Parse command velocities (use command for feedforward)
         v_cmd_local = info['command'][:2]
         w_cmd_local = info['command'][2]
-        
-        quat = data.xquat[1]
-        v_base_local = rotate_inv(data.cvel[1, 3:], quat)[:2]
-        w_base_local = rotate_inv(data.cvel[1, :3], quat)[2]
 
-        # 2. Feedforward: Kinematic drift prediction using ACTUAL velocities
-        v_ff_rot_x = -w_base_local * self.leg_offsets_y
-        v_ff_rot_y =  w_base_local * self.leg_offsets_x
+        quat = data.xquat[1]
+
+        # 2. Feedforward: Kinematic drift prediction using COMMAND velocities
+        v_ff_rot_x = -w_cmd_local * self.leg_offsets_y
+        v_ff_rot_y =  w_cmd_local * self.leg_offsets_x
 
         v_leg_local = jp.stack([
-            v_base_local[0] + v_ff_rot_x,
-            v_base_local[1] + v_ff_rot_y
+            v_cmd_local[0] + v_ff_rot_x,
+            v_cmd_local[1] + v_ff_rot_y
         ], axis=1)
 
-        # 3. Feedback: Linear + Angular velocity errors
-        # Yaw rate error: w_actual - w_cmd
-        w_err = w_base_local - w_cmd_local
-        
-        # Rotational velocity error at each hip
-        v_fb_rot_x = -w_err * self.leg_offsets_y
-        v_fb_rot_y =  w_err * self.leg_offsets_x
-        
-        # Combine linear and angular feedback for each leg (Shape: 4 x 2)
-        v_fb_local = jp.stack([
-            (v_base_local[0] - v_cmd_local[0]) + v_fb_rot_x,
-            (v_base_local[1] - v_cmd_local[1]) + v_fb_rot_y
-        ], axis=1) 
-
-        # 4. Global rotation
-        # Now both v_leg_local and v_fb_local are shape (4, 2)
+        # 3. Global rotation
         v_leg_local_3d = jp.concatenate([v_leg_local, jp.zeros((4, 1))], axis=1)
-        v_fb_local_3d = jp.concatenate([v_fb_local, jp.zeros((4, 1))], axis=1)
-
-        # vmap applies the rotation to all 4 legs simultaneously
         v_leg_global = jax.vmap(rotate, in_axes=(0, None))(v_leg_local_3d, quat)[:, :2]
-        v_fb_global = jax.vmap(rotate, in_axes=(0, None))(v_fb_local_3d, quat)[:, :2]
 
-        # 5. Calculate Raibert target (Mid-stance projection)
-        hip_pos = data.xpos[self.hip_inds][:, :2] 
+        # 4. Calculate Raibert target (Mid-stance projection)
+        hip_pos = data.xpos[self.hip_inds][:, :2]
         t_stance = self.gait_period / 2.0
         t_swing = self.gait_period / 2.0
-        
-        # Fully combined: Actual drift FF + Linear/Angular Error FB
-        raibert_offset = (t_swing + 0.5 * t_stance) * v_leg_global + self.raibert_k * v_fb_global
-        raibert_xy = hip_pos + raibert_offset
-        
+
+        raibert_offset = (t_swing + 0.5 * t_stance) * v_leg_global
+
+        # Hip -> foot offsets (base-local) rotated to global
+        foot_offset_local_3d = jp.concatenate([self.foot_offsets_xy, jp.zeros((4, 1))], axis=1)
+        foot_offset_global = jax.vmap(rotate, in_axes=(0, None))(foot_offset_local_3d, quat)[:, :2]
+
+        raibert_xy = hip_pos + foot_offset_global + raibert_offset
+
         # 6. 更新目标 (Phase Alignment)
         # Pair 1: FL(0), RR(3) -> 对应 Odd Step (Block 2) 摆动
         # Pair 2: FR(1), RL(2) -> 对应 Even Step (Block 1) 摆动
-        pair1 = jp.array([0, 3]) 
-        pair2 = jp.array([1, 2]) 
-        
+        pair1 = jp.array([0, 3])
+        pair2 = jp.array([1, 2])
+
         cur_tars = info['xy*']
-        
-        # 逻辑: 
-        # Even Step 开始瞬间 -> FR/RL (Pair 2) 变成摆动腿 -> 更新它们的目标
+
+        # Even Step 开始瞬间 -> FR/RL (Pair 2) 更新目标
         tars_p2 = cur_tars.at[pair2].set(raibert_xy[pair2])
-        
-        # Odd Step 开始瞬间 -> FL/RR (Pair 1) 变成摆动腿 -> 更新它们的目标
+
+        # Odd Step 开始瞬间 -> FL/RR (Pair 1) 更新目标
         tars_p1 = cur_tars.at[pair1].set(raibert_xy[pair1])
-        
-        # 选择
+
         xy_tars = jp.where(new_step & even_step, tars_p2, cur_tars)
         xy_tars = jp.where(new_step & (~even_step), tars_p1, xy_tars)
-        
         info['xy*'] = xy_tars
-        
+
         # 记录起跳点 (用于插值 Reward)
         feet_pos = data.geom_xpos[self.feet_inds][:, :2]
         info['xy0'] = jp.where(new_step, feet_pos, info['xy0'])
         info['k0'] = jp.where(new_step, s, info['k0'])
+
+        # 记录当前触地点高度 (用于摆线高度)
+        feet_z = data.site_xpos[self._feet_site_id][:, 2]
+        info['z0'] = jp.where(new_step, feet_z, info['z0'])
 
     def sample_command(self, rng, old_cmd):
         """
@@ -785,9 +756,7 @@ class JoystickGo2(Go2Env):
             
             # --- 2. Anchor Heuristics (Masked) ---
             # 静止时关掉 Anchor 引导，避免原地踏步
-            "feet_pos_xy":     self._cost_feet_pos_xy(data, info, extra_args) * scales.feet_pos_xy,
-            "feet_vel_xy":     self._cost_feet_vel_xy(data, info, extra_args) * scales.feet_vel_xy,
-            "feet_height":     self._cost_feet_height_wave(data, info, extra_args) * scales.feet_height,
+            "feet_traj":      self._cost_foot_traj_tracking(data, info, extra_args) * scales.feet_traj,
             
             # --- 3. Base Stability & Physics ---
             "lin_vel_z":       self._cost_lin_vel_z(data, info, extra_args) * scales.lin_vel_z,
@@ -835,26 +804,20 @@ class JoystickGo2(Go2Env):
 
     # --- 2. Anchor Heuristics (With Masks) ---
 
-    def _cost_feet_pos_xy(self, data, info, extra_args):
-        # Anchor 引导的落点位置 (Cycloid XY reference)
-        curr_feet = data.geom_xpos[self.feet_inds][:, :2]
-        ref_xy = info['foot_ref_xy']
+    def _cost_foot_traj_tracking(self, data, info, extra_args):
+        curr_feet = data.geom_xpos[self.feet_inds]
+        ref_pos = info['foot_ref_pos']
         swing_mask = info['foot_swing'][:, None]
-        dist_sq = jp.sum(jp.square((curr_feet - ref_xy) * swing_mask))
-        
-        # [Fix] 只有在移动时 (move_mask=1) 才要求追踪落点
-        return dist_sq * extra_args['move_mask']
+        pos_err = jp.sum(jp.square((curr_feet - ref_pos) * swing_mask))
 
-    def _cost_feet_height_wave(self, data, info, extra_args):
-        # Anchor 引导的抬腿目标：使用预先写入 info 的参考足端高度
-        h_tars = info['foot_ref_z']
-        
-        curr_feet_z = data.geom_xpos[self.feet_inds][:, 2]
-        
-        # [Fix] 只有在移动时 (move_mask=1) 才要求腿做正弦运动，防止静止时原地踏步
-        return jp.sum(jp.square(curr_feet_z - h_tars)) * extra_args['move_mask']
+        vel_err = 0.0
+        if self._foot_linvel_sensor_adr is not None:
+            feet_vel = data.sensordata[self._foot_linvel_sensor_adr]
+            vel_xy = feet_vel[..., :2]
+            ref_v_xy = info['foot_ref_v_xy']
+            vel_err = jp.sum(jp.square((vel_xy - ref_v_xy) * swing_mask[:, :2]))
 
-    # --- 3. Base Stability & Physics ---
+        return (pos_err + self._foot_traj_vel_weight * vel_err) * extra_args['move_mask']
 
     def _cost_lin_vel_z(self, data, info, extra_args):
         return jp.square(data.cvel[1, 5])
@@ -919,15 +882,6 @@ class JoystickGo2(Go2Env):
         # [Fix] 只有在移动时才奖励腾空
         return rew * extra_args['move_mask']
 
-    def _cost_feet_vel_xy(self, data, info, extra_args):
-        if self._foot_linvel_sensor_adr is not None:
-            feet_vel = data.sensordata[self._foot_linvel_sensor_adr]
-            vel_xy = feet_vel[..., :2]
-            ref_v_xy = info['foot_ref_v_xy']
-            swing_mask = info['foot_swing'][:, None]
-            err = (vel_xy - ref_v_xy) * swing_mask
-            return jp.sum(jp.square(err)) * extra_args['move_mask']
-        return 0.0
 
     # --- 6. Safety & Limits ---
 
@@ -959,58 +913,46 @@ class JoystickGo2(Go2Env):
         """
         print("Running Ultimate Phase Alignment Check (Height + Actual + Raibert + Kino)...")
         import matplotlib.pyplot as plt
-        from collections import namedtuple
-        
+
         # 模拟 4 个周期
         steps = np.arange(self.step_k * 4)
-        
+
         # 日志
-        height_target_log = []   # Reward 要求的高度（模型参考）
+        height_target_log = []   # Reward 要求的高度（摆线参考）
         height_actual_log = []   # 实际高度（当前模型前向运动学）
         raibert_change_log = []  # Raibert 落点是否发生更新 (Event)
         kino_thigh_log = []      # Ref Kino 中的髋关节角度
         swing_mask_fl_log = []   # FL 摆动 mask
         swing_mask_fr_log = []   # FR 摆动 mask
         foot_idx = 0             # 随便选一个脚，这里选 FL
-        
-        # Mock Data 定义
-        # [Fix] 确保 geom_xpos 不是 None
-        MockData = namedtuple('MockData', ['geom_xpos', 'xpos', 'xquat'])
-        
-        # 计算最大的 geom index 以创建正确大小的数组
-        max_geom_id = int(jp.max(self.feet_inds)) + 1
-        fake_geom_xpos = jp.zeros((max_geom_id, 3)) # <--- 修复点：全零数组
-        
+
         # 伪造一个恒定的指令：向前走 1.0 m/s
         cmd = jp.array([1.0, 0.0, 0.0])
-        
+
         # 初始化状态用于 Raibert 迭代
         info = {
             'step': jp.array(0, dtype=jp.int32),
             'k0': jp.array(0, dtype=jp.int32),
             'command': cmd,
-            'xy0': jp.zeros((4, 2)), 
-            'xy*': jp.zeros((4, 2)), 
+            'xy0': jp.zeros((4, 2)),
+            'xy*': jp.zeros((4, 2)),
+            'foot_phase': 0.0,
+            'foot_swing': jp.zeros(4),
+            'foot_ref_xy': jp.zeros((4, 2)),
+            'foot_ref_z': jp.zeros(4),
+            'foot_ref_pos': jp.zeros((4, 3)),
+            'foot_ref_v_xy': jp.zeros((4, 2)),
+            'z0': jp.zeros(4),
         }
-        
+
         last_fl_target_x = 0.0
-        
-        # 伪造物理数据
-        fake_xpos = jp.zeros((self.mjx_model.nbody, 3))
-        fake_xquat = jp.array([[1., 0., 0., 0.]] * self.mjx_model.nbody)
-        
-        # [Fix] 传入 fake_geom_xpos 而不是 None
-        mock_data_raibert = MockData(geom_xpos=fake_geom_xpos, xpos=fake_xpos, xquat=fake_xquat)
 
         for s in steps:
             # 更新 step
             info['step'] = jp.array(s, dtype=jp.int32)
-            
-            # --- 1. Check Reward (Height Wave) ---
             step_idx = int(s % self.l_cycle)
-            h_target = float(self.kinematic_ref_feet_z[step_idx, foot_idx])
-            height_target_log.append(h_target)
-            
+
+            # Build ref data
             qpos_ref = self.kinematic_ref_qpos[step_idx]
             ref_data = mjx_env.make_data(
                 self.mj_model,
@@ -1022,25 +964,30 @@ class JoystickGo2(Go2Env):
                 njmax=self._config.njmax,
             )
             ref_data = mjx.forward(self.mjx_model, ref_data)
+
+            # Update Raibert + cycloid ref
+            self._update_raibert_target(ref_data, info)
+            self._update_foot_cycloid_ref(info)
+
+            # --- 1. Check Reward (Height Wave) ---
+            h_target = float(info['foot_ref_z'][foot_idx])
+            height_target_log.append(h_target)
+
             h_actual = float(ref_data.geom_xpos[self.feet_inds[foot_idx], 2])
             height_actual_log.append(h_actual)
-            
+
             # --- 2. Check Raibert (Target Update) ---
-            # 现在调用不会报错了
-            self._update_raibert_target(mock_data_raibert, info)
-            self._update_foot_cycloid_ref(info)
-            
-            current_fl_target_x = float(info['xy*'][0, 0]) 
-            
+            current_fl_target_x = float(info['xy*'][0, 0])
+
             if s > 0 and abs(current_fl_target_x - last_fl_target_x) > 1e-4:
-                raibert_change_log.append(0.12) 
+                raibert_change_log.append(0.12)
             else:
                 raibert_change_log.append(0.0)
-            
+
             last_fl_target_x = current_fl_target_x
-            
+
             # --- 3. Check Ref Kino (Joint Angle) ---
-            kin_ref = self.kinematic_ref_qpos[step_idx] 
+            kin_ref = self.kinematic_ref_qpos[step_idx]
             fl_thigh_angle = float(kin_ref[8])
             kino_thigh_log.append(fl_thigh_angle)
             swing_mask_fl_log.append(float(info['foot_swing'][0]))
@@ -1048,31 +995,173 @@ class JoystickGo2(Go2Env):
 
         # --- 绘图验证 ---
         fig, ax1 = plt.subplots(figsize=(12, 6))
-        
+
         # 1. Height target + actual (Green + Orange)
         ax1.plot(steps, height_target_log, 'g-', label='Reward Target Height (FL)', linewidth=2)
         ax1.plot(steps, height_actual_log, color='orange', linestyle='-', label='Actual Height (FL)', linewidth=1.5, alpha=0.8)
         ax1.set_ylabel('Height (m)')
         ax1.set_ylim(0, 0.15)
-        
+
         # 2. Ref Kino (Blue)
         ax2 = ax1.twinx()
         ax2.plot(steps, kino_thigh_log, 'b--', label='Ref Kino: FL Thigh Angle', linewidth=2, alpha=0.6)
         ax2.set_ylabel('Joint Angle (rad)')
-        
+
         # 3. Raibert Update (Red Bars)
         ax1.bar(steps, raibert_change_log, width=1.0, color='red', alpha=0.3, label='Raibert: Target Update Event')
         ax1.plot(steps, np.array(swing_mask_fl_log) * 0.015, color='black', linestyle='--', linewidth=1.5, label='Swing Mask FL (scaled)')
         ax1.plot(steps, np.array(swing_mask_fr_log) * 0.015, color='gray', linestyle='--', linewidth=1.5, label='Swing Mask FR (scaled)')
-        
+
+        # 4. 标注足端最高点（实际高度）
+        height_actual_arr = np.array(height_actual_log)
+        peak_idx = int(np.argmax(height_actual_arr))
+        peak_step = steps[peak_idx]
+        peak_height = float(height_actual_arr[peak_idx])
+        ax1.scatter([peak_step], [peak_height], color='orange', s=50, zorder=5)
+        ax1.annotate(
+            f"peak={peak_height:.4f} m",
+            xy=(peak_step, peak_height),
+            xytext=(peak_step + self.step_k * 0.1, peak_height + 0.01),
+            arrowprops=dict(arrowstyle="->", color="orange", lw=1.2),
+            color="orange",
+            fontsize=10,
+        )
+
         plt.title(f"Multi-Phase Alignment Check (Step K={self.step_k})")
         plt.axvspan(0, self.step_k, color='gray', alpha=0.1, label='Even Step (Stance)')
         plt.axvspan(self.step_k, self.step_k*2, color='green', alpha=0.1, label='Odd Step (Swing)')
-        
+
         lines1, labels1 = ax1.get_legend_handles_labels()
         lines2, labels2 = ax2.get_legend_handles_labels()
         ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
-        
+
         plt.grid(True)
         plt.show()
-    
+
+
+    def play_cycloid_foot_trajectory(
+        self,
+        command: Optional[np.ndarray] = None,
+        foot: str = "FL_foot",
+        num_steps: Optional[int] = None,
+        render_every: int = 2,
+        save_path: Optional[str] = None,
+        camera: Optional[str] = None,
+        trail_stride: int = 2,
+        trail_max: int = 80,
+    ):
+        """
+        Visualize the reward foot trajectory while playing ref kino.
+
+        Args:
+            command: Fixed command [vx, vy, wz] used by Raibert target update.
+            foot: Foot site name, e.g. "FL_foot", "FR_foot", "RL_foot", "RR_foot".
+            num_steps: Number of frames to visualize. Defaults to one ref cycle.
+            render_every: Render every Nth frame.
+            save_path: Optional output video path.
+            camera: Optional camera name.
+            trail_stride: Downsampled trail stride for path visualization.
+            trail_max: Max number of trail points to draw per frame.
+        """
+        print("Playing reward foot trajectory with ref kino...")
+
+        if command is None:
+            command = np.array([1.0, 0.0, 0.0])
+        command = np.asarray(command, dtype=np.float32)
+
+        # Resolve foot index
+        if foot in consts.FEET_SITES:
+            foot_idx = consts.FEET_SITES.index(foot)
+        else:
+            raise ValueError(f"Unknown foot site: {foot}. Expected one of {consts.FEET_SITES}.")
+
+        # Use ref kino trajectory for rendering
+        if num_steps is None:
+            num_steps = int(self.l_cycle)
+        ref_qpos = np.array(self.kinematic_ref_qpos[:num_steps])
+
+        # Prepare Raibert info
+        info = {
+            'step': jp.array(0, dtype=jp.int32),
+            'k0': jp.array(0, dtype=jp.int32),
+            'command': jp.array(command),
+            'xy0': jp.zeros((4, 2)),
+            'xy*': jp.zeros((4, 2)),
+            'foot_phase': 0.0,
+            'foot_swing': jp.zeros(4),
+            'foot_ref_xy': jp.zeros((4, 2)),
+            'foot_ref_z': jp.zeros(4),
+            'foot_ref_pos': jp.zeros((4, 3)),
+            'foot_ref_v_xy': jp.zeros((4, 2)),
+            'z0': jp.zeros(4),
+        }
+
+        # Trajectory container
+        path_xyz = np.zeros((num_steps, 3), dtype=np.float32)
+
+        for i in range(num_steps):
+            info['step'] = jp.array(i, dtype=jp.int32)
+
+            # Build mjx data from ref kino at this step (for Raibert hip positions + quat)
+            ref_data = mjx_env.make_data(
+                self.mj_model,
+                qpos=self.kinematic_ref_qpos[i],
+                qvel=jp.zeros(self.mjx_model.nv),
+                ctrl=jp.zeros(self.mjx_model.nu),
+                impl=self.mjx_model.impl.value,
+                nconmax=self._config.nconmax,
+                njmax=self._config.njmax,
+            )
+            ref_data = mjx.forward(self.mjx_model, ref_data)
+
+            # Update Raibert targets from fixed command
+            self._update_raibert_target(ref_data, info)
+            self._update_foot_cycloid_ref(info)
+
+            path_xyz[i] = np.array(info['foot_ref_pos'][foot_idx])
+
+        # Static rendering uses ref kino qpos (playing ref motion)
+        qpos_traj = ref_qpos
+
+        def _add_sphere(scn, pos, radius, rgba):
+            if scn.ngeom >= scn.maxgeom:
+                return
+            scn.ngeom += 1
+            scn.geoms[scn.ngeom - 1].category = mujoco.mjtCatBit.mjCAT_DECOR
+            mujoco.mjv_initGeom(
+                geom=scn.geoms[scn.ngeom - 1],
+                type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                size=np.array([radius, 0.0, 0.0]),
+                pos=np.array(pos),
+                mat=np.eye(3).flatten().astype(np.float32),
+                rgba=np.asarray(rgba).astype(np.float32),
+            )
+
+        modify_scene_fns = []
+        for i in range(num_steps):
+            def make_fn(idx=i):
+                def _fn(scn):
+                    trail = path_xyz[: idx + 1 : max(1, trail_stride)]
+                    if trail_max is not None and len(trail) > trail_max:
+                        trail = trail[-trail_max:]
+                    for p in trail:
+                        _add_sphere(scn, p, radius=0.007, rgba=[0.2, 0.8, 0.2, 0.6])
+                    _add_sphere(scn, path_xyz[idx], radius=0.012, rgba=[0.9, 0.3, 0.2, 0.9])
+                    _add_sphere(scn, path_xyz[0], radius=0.009, rgba=[0.2, 0.4, 0.9, 0.9])
+                    _add_sphere(scn, path_xyz[-1], radius=0.009, rgba=[0.2, 0.4, 0.9, 0.9])
+                return _fn
+            modify_scene_fns.append(make_fn())
+
+        frames = self._render_trajectory(
+            trajectory=qpos_traj,
+            render_every=render_every,
+            height=480,
+            width=640,
+            camera=camera,
+            save_path=save_path,
+            modify_scene_fns=modify_scene_fns[::render_every],
+        )
+
+        fps = 1.0 / (self.dt * render_every)
+        media.show_video(frames, fps=fps, loop=True)
+        return frames, path_xyz

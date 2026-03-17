@@ -85,8 +85,8 @@ def default_config() -> config_dict.ConfigDict:
     cfg.env.gait_scale = consts.GAIT_SCALE    # 运动学参考摆腿幅值（影响抬脚高度）
     cfg.env.err_threshold = 0.1
     cfg.env.action_scale = [0.5, 0.5, 0.5] * 4  # 每条腿3个关节，共4条腿
-    cfg.env.reset2ref = True
-    cfg.env.reference_state_init = False # RSI: Deepmimic
+    cfg.env.reset2ref = False
+    cfg.env.reference_state_init = True # RSI: Deepmimic
     cfg.env.impratio = 100
     cfg.env.iterations = 1
     # 扰动配置
@@ -249,6 +249,9 @@ class TrotGo2(Go2Env):
             },
             'last_action': jp.zeros(self.mjx_model.nu),  # 12 通道动作
             'kinematic_ref': qpos,
+            # Unified obs fields (match JoystickGo2 full obs layout)
+            'command': jp.zeros(3),
+            'anchor_action': jp.zeros(self.mjx_model.nu),
 
             "steps_until_next_pert": steps_until_next_pert,
             "pert_duration_seconds": pert_duration_seconds,
@@ -375,16 +378,33 @@ class TrotGo2(Go2Env):
 
     # -------- obs & reward helpers ----------
     def _get_obs(self, data, state_info: Dict[str, Any]):
+        # Unified full observation for anchor training, aligned with JoystickGo2.
+        # Order (72 dims): v_local(3), w_local(3), g_local(3), command(3),
+        # angles(12), joint_vels(12), last_action(12), kin_ref(12), anchor_action(12).
         q = data.xquat[1]
-        local_omega = data.cvel[1, :3]
-        yaw_rate = rotate_inv(local_omega, q)[2]
+        v_local = rotate_inv(data.cvel[1, 3:], q)
+        w_local = rotate_inv(data.cvel[1, :3], q)
         g_world = jp.array([0.0, 0.0, -1.0])
-        g_local = rotate_inv(g_world, data.xquat[1])
+        g_local = rotate_inv(g_world, q)
         angles = data.qpos[7:19]
+        joint_vels = data.qvel[6:]
         last_action = state_info["last_action"]
         step_idx = jp.array(state_info["step"] % self.l_cycle, int)
         kin_ref = self.kinematic_ref_qpos[step_idx][7:]
-        obs_list = [jp.array([yaw_rate]) * 0.25, g_local, angles - jp.array(self._default_ap_pose), last_action, kin_ref]
+        command = state_info["command"]
+        anchor_action = state_info["anchor_action"]
+
+        obs_list = [
+            v_local,
+            w_local,
+            g_local,
+            command,
+            angles - jp.array(self._default_ap_pose),
+            joint_vels,
+            last_action,
+            kin_ref,
+            anchor_action,
+        ]
         obs = jp.clip(jp.concatenate(obs_list), -100.0, 100.0)
         return {"state": obs}
 

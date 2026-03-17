@@ -41,13 +41,13 @@ ACCELEROMETER_SENSOR = "accelerometer"
 GYRO_SENSOR = "gyro"
 
 # Anchor Policy 相关常量
-ANCHOR_OBS_DIM = 40
+ANCHOR_OBS_DIM = 72
 ANCHOR_ACT_DIM = 12
-ANCHOR_PATH = '/data/mujoco_playground/mujoco_playground/experimental/learning/checkpoints/Go2Trot-20260308-090137/trotting_apg_1_5_hz_policy.pkl'
+ANCHOR_PATH = '/data/mujoco_playground/mujoco_playground/experimental/learning/checkpoints/Go2Trot-20260316-155000/trotting_apg_2_hz_policy.pkl'
 
-RESIDUAL_OBS_DIM = 60
+RESIDUAL_OBS_DIM = 72
 RESIDUAL_ACT_DIM = 12
 
 # pattern generator 相关常量
-STEP_K = 17
+STEP_K = 13
 GAIT_SCALE = 0.3
