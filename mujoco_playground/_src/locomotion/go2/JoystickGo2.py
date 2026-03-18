@@ -32,10 +32,9 @@ def default_config() -> config_dict.ConfigDict:
     
     cfg.env = config_dict.ConfigDict()
     cfg.env.anchor_action_scale = [0.5, 0.5, 0.5] * 4
-    cfg.env.residual_action_scale = [1.0, 0.5, 0.5] * 4
+    cfg.env.residual_action_scale = [0.5, 0.8, 0.8] * 4
     cfg.env.step_k = consts.STEP_K
     cfg.env.gait_scale = consts.GAIT_SCALE
-    cfg.env.raibert_k = 0.5
     cfg.env.step_height = 0.1128  # max peak cycloid height (cap)
     cfg.env.step_height_min = 0.0
     cfg.env.foot_traj_vel_weight = 0.2
@@ -69,23 +68,23 @@ def default_config() -> config_dict.ConfigDict:
     cfg.rewards.scales = config_dict.ConfigDict()
     
     # Tracking
-    cfg.rewards.scales.tracking_lin_vel = 1.5
-    cfg.rewards.scales.tracking_ang_vel = 1.0
+    cfg.rewards.scales.tracking_lin_vel = 3.0
+    cfg.rewards.scales.tracking_ang_vel = 2.0
     
     # Anchor Heuristics
     cfg.rewards.scales.feet_traj = -5.0
     
     # Smoothness & Physics (新增)
     cfg.rewards.scales.lin_vel_z = -0.5
-    cfg.rewards.scales.ang_vel_xy = -0.05
+    cfg.rewards.scales.ang_vel_xy = -0.1
     cfg.rewards.scales.orientation = -10.0
     cfg.rewards.scales.torques = -0.0002
     cfg.rewards.scales.action_rate = -0.05
     cfg.rewards.scales.energy = -0.001
     
     # Feet Interaction (新增)
-    cfg.rewards.scales.feet_slip = -0.1
-    cfg.rewards.scales.feet_clearance = -1.0
+    cfg.rewards.scales.feet_slip = -1.0
+    cfg.rewards.scales.feet_clearance = -0.5
     cfg.rewards.scales.feet_air_time = 5.0
     cfg.rewards.scales.dof_pos_limits = -1.0
     cfg.rewards.scales.stand_still = -0.5
@@ -170,7 +169,6 @@ class JoystickGo2(Go2Env):
         self.step_k = step_k
         self.gait_scale = gait_scale
         self.gait_period = step_k * 2 * self.dt
-        self.raibert_k = float(getattr(self._config.env, "raibert_k", 0.2))
         
         # 5. Kinematic Reference
         kinematic_ref_qpos = make_kinematic_ref(cos_wave, step_k, scale=gait_scale, dt=self.dt)
