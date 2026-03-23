@@ -84,17 +84,26 @@ def default_config() -> config_dict.ConfigDict:
     cfg.env.step_k = consts.STEP_K            # 每条腿抬起/落下的子步数量
     cfg.env.gait_scale = consts.GAIT_SCALE    # 运动学参考摆腿幅值（影响抬脚高度）
     cfg.env.err_threshold = 0.1
-    cfg.env.action_scale = [0.5, 0.5, 0.5] * 4  # 每条腿3个关节，共4条腿
+    cfg.env.action_scale = [0.3, 0.5, 0.5] * 4  # 每条腿3个关节，共4条腿
     cfg.env.reset2ref = False
     cfg.env.reference_state_init = True # RSI: Deepmimic
     cfg.env.impratio = 100
     cfg.env.iterations = 1
+
+    cfg.noise_config = config_dict.ConfigDict()
+    cfg.noise_config.level = 1.0
+    cfg.noise_config.scales = config_dict.ConfigDict()
+    cfg.noise_config.scales.joint_pos = 0.03
+    cfg.noise_config.scales.joint_vel = 1.5
+    cfg.noise_config.scales.gyro = 0.2
+    cfg.noise_config.scales.gravity = 0.05
+
     # 扰动配置
-    cfg.pert_config = config_dict.ConfigDict()
-    cfg.pert_config.enable = False
-    cfg.pert_config.velocity_kick = [0.0, 3.0]
-    cfg.pert_config.kick_durations = [0.05, 0.2]
-    cfg.pert_config.kick_wait_times = [1.0, 3.0]
+    cfg.disturbance = config_dict.ConfigDict()
+    cfg.disturbance.enable = True
+    cfg.disturbance.velocity_kick = [0.0, 1.0]
+    cfg.disturbance.kick_durations = [0.05, 0.2]
+    cfg.disturbance.kick_wait_times = [1.0, 3.0]
     # 奖励权重
     cfg.rewards = config_dict.ConfigDict()
     cfg.rewards.scales = config_dict.ConfigDict()
@@ -215,26 +224,26 @@ class TrotGo2(Go2Env):
         data = mjx.forward(self.mjx_model, data)
 
         rng, key1, key2, key3 = jax.random.split(rng, 4)
-        time_until_next_pert = jax.random.uniform(
+        time_until_next_disturbance = jax.random.uniform(
             key1,
-            minval=self._config.pert_config.kick_wait_times[0],
-            maxval=self._config.pert_config.kick_wait_times[1],
+            minval=self._config.disturbance.kick_wait_times[0],
+            maxval=self._config.disturbance.kick_wait_times[1],
         )
-        steps_until_next_pert = jp.round(time_until_next_pert / self.dt).astype(
+        steps_until_next_disturbance = jp.round(time_until_next_disturbance / self.dt).astype(
             jp.int32
         )
-        pert_duration_seconds = jax.random.uniform(
+        disturbance_duration_seconds = jax.random.uniform(
             key2,
-            minval=self._config.pert_config.kick_durations[0],
-            maxval=self._config.pert_config.kick_durations[1],
+            minval=self._config.disturbance.kick_durations[0],
+            maxval=self._config.disturbance.kick_durations[1],
         )
-        pert_duration_steps = jp.round(pert_duration_seconds / self.dt).astype(
+        disturbance_duration_steps = jp.round(disturbance_duration_seconds / self.dt).astype(
             jp.int32
         )
-        pert_mag = jax.random.uniform(
+        disturbance_mag = jax.random.uniform(
             key3,
-            minval=self._config.pert_config.velocity_kick[0],
-            maxval=self._config.pert_config.velocity_kick[1],
+            minval=self._config.disturbance.velocity_kick[0],
+            maxval=self._config.disturbance.velocity_kick[1],
         )
 
         # state_info 保持和原版一致
@@ -253,13 +262,13 @@ class TrotGo2(Go2Env):
             'command': jp.zeros(3),
             'anchor_action': jp.zeros(self.mjx_model.nu),
 
-            "steps_until_next_pert": steps_until_next_pert,
-            "pert_duration_seconds": pert_duration_seconds,
-            "pert_duration": pert_duration_steps,
-            "steps_since_last_pert": 0,
-            "pert_steps": 0,
-            "pert_dir": jp.zeros(3),
-            "pert_mag": pert_mag,
+            "steps_until_next_disturbance": steps_until_next_disturbance,
+            "disturbance_duration_seconds": disturbance_duration_seconds,
+            "disturbance_duration": disturbance_duration_steps,
+            "steps_since_last_disturbance": 0,
+            "disturbance_steps": 0,
+            "disturbance_dir": jp.zeros(3),
+            "disturbance_mag": disturbance_mag,
         }
 
         # 生成 obs
@@ -276,9 +285,9 @@ class TrotGo2(Go2Env):
         return jax.lax.stop_gradient(state)
 
     def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
-        # TODO 扰动
-        if self._config.pert_config.enable:
-            state = self._maybe_apply_perturbation(state)
+        # add disturbance
+        if self._config.disturbance.enable:
+            state = self._maybe_apply_disturbance(state)
     
         action = jp.clip(action, -1, 1)
         ctrl = self.action_loc + (action * self.action_scale)
@@ -376,18 +385,38 @@ class TrotGo2(Go2Env):
 
         return frames
 
+    def _apply_obs_noise(self, info: dict[str, Any], x: jax.Array, scale: float):
+        info["rng"], noise_rng = jax.random.split(info["rng"])
+        noise = (
+            (2 * jax.random.uniform(noise_rng, shape=x.shape) - 1)
+            * self._config.noise_config.level
+            * scale
+        )
+        return x + noise
+
     # -------- obs & reward helpers ----------
     def _get_obs(self, data, state_info: Dict[str, Any]):
         # Unified full observation for anchor training, aligned with JoystickGo2.
-        # Order (72 dims): v_local(3), w_local(3), g_local(3), command(3),
-        # angles(12), joint_vels(12), last_action(12), kin_ref(12), anchor_action(12).
+        # Order (69 dims): w_local(3), g_local(3), command(3), angles(12),
+        # joint_vels(12), last_action(12), kin_ref(12), anchor_action(12).
         q = data.xquat[1]
-        v_local = rotate_inv(data.cvel[1, 3:], q)
         w_local = rotate_inv(data.cvel[1, :3], q)
+        w_local = self._apply_obs_noise(
+            state_info, w_local, self._config.noise_config.scales.gyro
+        ) * consts.OBS_W_LOCAL_SCALE
         g_world = jp.array([0.0, 0.0, -1.0])
         g_local = rotate_inv(g_world, q)
+        g_local = self._apply_obs_noise(
+            state_info, g_local, self._config.noise_config.scales.gravity
+        )
         angles = data.qpos[7:19]
+        angles = self._apply_obs_noise(
+            state_info, angles, self._config.noise_config.scales.joint_pos
+        )
         joint_vels = data.qvel[6:]
+        joint_vels = self._apply_obs_noise(
+            state_info, joint_vels, self._config.noise_config.scales.joint_vel
+        ) * consts.OBS_JOINT_VELS_SCALE
         last_action = state_info["last_action"]
         step_idx = jp.array(state_info["step"] % self.l_cycle, int)
         kin_ref = self.kinematic_ref_qpos[step_idx][7:]
@@ -395,7 +424,6 @@ class TrotGo2(Go2Env):
         anchor_action = state_info["anchor_action"]
 
         obs_list = [
-            v_local,
             w_local,
             g_local,
             command,
@@ -441,58 +469,102 @@ class TrotGo2(Go2Env):
         return pos_err + 0.5 * rot_err + 0.1 * vel_err
     
     # ----------------- Disturbance -----------------
-    def _maybe_apply_perturbation(self, state: mjx_env.State) -> mjx_env.State:
+    def _maybe_apply_disturbance(self, state: mjx_env.State) -> mjx_env.State:
         def gen_dir(rng: jax.Array) -> jax.Array:
             angle = jax.random.uniform(rng, minval=0.0, maxval=jp.pi * 2)
             return jp.array([jp.cos(angle), jp.sin(angle), 0.0])
 
-        def apply_pert(state: mjx_env.State) -> mjx_env.State:
-            t = state.info["pert_steps"] * self.dt
-            u_t = 0.5 * jp.sin(jp.pi * t / state.info["pert_duration_seconds"])
-            # kg * m/s * 1/s = m/s^2 = kg * m/s^2 (N).
+        def apply_disturbance(state: mjx_env.State) -> mjx_env.State:
+            t = state.info["disturbance_steps"] * self.dt
+            u_t = 0.5 * jp.sin(jp.pi * t / state.info["disturbance_duration_seconds"])
             force = (
-                u_t  # (unitless)
-                * self.base_mass  # kg
-                * state.info["pert_mag"]  # m/s
-                / state.info["pert_duration_seconds"]  # 1/s
+                u_t
+                * self.base_mass
+                * state.info["disturbance_mag"]
+                / state.info["disturbance_duration_seconds"]
             )
             xfrc_applied = jp.zeros((self.mjx_model.nbody, 6))
             xfrc_applied = xfrc_applied.at[self.base_id, :3].set(
-                force * state.info["pert_dir"]
+                force * state.info["disturbance_dir"]
+            )
+            state.info["rng"], key_wait, key_dur, key_mag = jax.random.split(
+                state.info["rng"], 4
+            )
+            done_kick = state.info["disturbance_steps"] >= state.info["disturbance_duration"]
+            time_until_next_disturbance = jax.random.uniform(
+                key_wait,
+                minval=self._config.disturbance.kick_wait_times[0],
+                maxval=self._config.disturbance.kick_wait_times[1],
+            )
+            steps_until_next_disturbance = jp.round(time_until_next_disturbance / self.dt).astype(
+                jp.int32
+            )
+            disturbance_duration_seconds = jax.random.uniform(
+                key_dur,
+                minval=self._config.disturbance.kick_durations[0],
+                maxval=self._config.disturbance.kick_durations[1],
+            )
+            disturbance_duration_steps = jp.round(disturbance_duration_seconds / self.dt).astype(
+                jp.int32
+            )
+            disturbance_mag = jax.random.uniform(
+                key_mag,
+                minval=self._config.disturbance.velocity_kick[0],
+                maxval=self._config.disturbance.velocity_kick[1],
             )
             data = state.data.replace(xfrc_applied=xfrc_applied)
             state = state.replace(data=data)
-            state.info["steps_since_last_pert"] = jp.where(
-                state.info["pert_steps"] >= state.info["pert_duration"],
+            state.info["steps_since_last_disturbance"] = jp.where(
+                done_kick,
                 0,
-                state.info["steps_since_last_pert"],
+                state.info["steps_since_last_disturbance"],
             )
-            state.info["pert_steps"] += 1
+            state.info["steps_until_next_disturbance"] = jp.where(
+                done_kick,
+                steps_until_next_disturbance,
+                state.info["steps_until_next_disturbance"],
+            )
+            state.info["disturbance_duration_seconds"] = jp.where(
+                done_kick,
+                disturbance_duration_seconds,
+                state.info["disturbance_duration_seconds"],
+            )
+            state.info["disturbance_duration"] = jp.where(
+                done_kick,
+                disturbance_duration_steps,
+                state.info["disturbance_duration"],
+            )
+            state.info["disturbance_mag"] = jp.where(
+                done_kick,
+                disturbance_mag,
+                state.info["disturbance_mag"],
+            )
+            state.info["disturbance_steps"] += 1
             return state
 
         def wait(state: mjx_env.State) -> mjx_env.State:
             state.info["rng"], rng = jax.random.split(state.info["rng"])
-            state.info["steps_since_last_pert"] += 1
+            state.info["steps_since_last_disturbance"] += 1
             xfrc_applied = jp.zeros((self.mjx_model.nbody, 6))
             data = state.data.replace(xfrc_applied=xfrc_applied)
-            state.info["pert_steps"] = jp.where(
-                state.info["steps_since_last_pert"]
-                >= state.info["steps_until_next_pert"],
+            state.info["disturbance_steps"] = jp.where(
+                state.info["steps_since_last_disturbance"]
+                >= state.info["steps_until_next_disturbance"],
                 0,
-                state.info["pert_steps"],
+                state.info["disturbance_steps"],
             )
-            state.info["pert_dir"] = jp.where(
-                state.info["steps_since_last_pert"]
-                >= state.info["steps_until_next_pert"],
+            state.info["disturbance_dir"] = jp.where(
+                state.info["steps_since_last_disturbance"]
+                >= state.info["steps_until_next_disturbance"],
                 gen_dir(rng),
-                state.info["pert_dir"],
+                state.info["disturbance_dir"],
             )
             return state.replace(data=data)
 
         return jax.lax.cond(
-            state.info["steps_since_last_pert"]
-            >= state.info["steps_until_next_pert"],
-            apply_pert,
+            state.info["steps_since_last_disturbance"]
+            >= state.info["steps_until_next_disturbance"],
+            apply_disturbance,
             wait,
             state,
         )

@@ -31,7 +31,7 @@ def default_config() -> config_dict.ConfigDict:
     cfg.episode_length = 240
     
     cfg.env = config_dict.ConfigDict()
-    cfg.env.anchor_action_scale = [0.5, 0.5, 0.5] * 4
+    cfg.env.anchor_action_scale = [0.3, 0.5, 0.5] * 4
     cfg.env.residual_action_scale = [0.5, 0.8, 0.8] * 4
     cfg.env.step_k = consts.STEP_K
     cfg.env.gait_scale = consts.GAIT_SCALE
@@ -49,7 +49,7 @@ def default_config() -> config_dict.ConfigDict:
     cfg.noise_config.scales.joint_vel = 1.5
     cfg.noise_config.scales.gyro = 0.2
     cfg.noise_config.scales.gravity = 0.05
-    cfg.noise_config.scales.linvel = 0.1
+    # cfg.noise_config.scales.linvel = 0.1
     
     # 2. 指令配置
     cfg.command_config = config_dict.ConfigDict()
@@ -574,18 +574,14 @@ class JoystickGo2(Go2Env):
     def _get_obs(self, data, info):
         """
         Unified observation (aligned with TrotGo2):
-        Order (72 dims): v_local(3), w_local(3), g_local(3), command(3),
-        angles(12), joint_vels(12), last_action(12), kin_ref(12), anchor_action(12).
+        Order (69 dims): w_local(3), g_local(3), command(3), angles(12),
+        joint_vels(12), last_action(12), kin_ref(12), anchor_action(12).
         """
         q = data.xquat[1]
-        v_local = rotate_inv(data.cvel[1, 3:], q)
-        v_local = self._apply_obs_noise(
-            info, v_local, self._config.noise_config.scales.linvel
-        )
         w_local = rotate_inv(data.cvel[1, :3], q)
         w_local = self._apply_obs_noise(
             info, w_local, self._config.noise_config.scales.gyro
-        )
+        ) * consts.OBS_W_LOCAL_SCALE
         g_local = rotate_inv(jp.array([0., 0., -1.]), q)
         g_local = self._apply_obs_noise(
             info, g_local, self._config.noise_config.scales.gravity
@@ -597,7 +593,7 @@ class JoystickGo2(Go2Env):
         joint_vels = data.qvel[6:]
         joint_vels = self._apply_obs_noise(
             info, joint_vels, self._config.noise_config.scales.joint_vel,
-        )
+        ) * consts.OBS_JOINT_VELS_SCALE
         last_action = info['last_action']
         step_idx = jp.array(info['step'] % self.l_cycle, int)
         kin_ref = self.kinematic_ref_qpos[step_idx][7:]
@@ -605,7 +601,6 @@ class JoystickGo2(Go2Env):
         anchor_action = info['anchor_action']
 
         obs_list = [
-            v_local,                        # 3
             w_local,                        # 3
             g_local,                        # 3
             command,                        # 3 (Vx, Vy, Wz)
@@ -621,10 +616,10 @@ class JoystickGo2(Go2Env):
     def _get_anchor_obs(self, data, info):
         obs_dict = self._get_obs(data, info)
         obs = obs_dict["state"]
-        # Mask command (indices 9 to 11)
-        obs = obs.at[9:12].set(0.0)
-        # Mask anchor_action (indices 60 to 71)
-        obs = obs.at[60:72].set(0.0)
+        # Mask command for anchor policy input.
+        obs = obs.at[consts.OBS_COMMAND_SLICE].set(0.0)
+        # Anchor policy should not consume its own action.
+        obs = obs.at[consts.OBS_ANCHOR_ACTION_SLICE].set(0.0)
         
         return {"state": obs}
 

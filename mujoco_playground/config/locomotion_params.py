@@ -106,7 +106,8 @@ def brax_apg_config(
         policy_obs_key="state",
     )
     # Symmetry loss for JoystickGo2 residual policy.
-    # Obs layout (60): v(3), w(3), g(3), cmd(3), qpos(12), qvel(12), last_action(12), anchor_action(12)
+    # Obs layout (69): w(3), g(3), cmd(3), qpos(12), qvel(12),
+    # last_action(12), kin_ref(12), anchor_action(12)
     # Action layout (12): [FL, FR, RL, RR] x [hip, thigh, calf]
     # Signed permutation encoding:
     #   new[i] = sign(perm[i]) * old[floor(abs(perm[i]) + 1e-3)]
@@ -115,41 +116,40 @@ def brax_apg_config(
     rl_config.sym_coef = 1.0
     rl_config.sym_obs_key = "state"
     rl_config.obs_permutation = (
-        # 0-11: Base states and command
-        0.0001,  -1.0,   2.0,     # [0-2]   v_local (vx, -vy, vz)
-       -3.0,      4.0,  -5.0,     # [3-5]   w_local (-wx, wy, -wz)
-        6.0,     -7.0,   8.0,     # [6-8]   g_local (gx, -gy, gz)
-        9.0,    -10.0, -11.0,     # [9-11]  command (vx, -vy, -wz)
-        
-        # 12-23: angles (qpos - default_ap_pose)
-      -15.0,     16.0,  17.0,     # [12-14] angles FL <- FR
-      -12.0,     13.0,  14.0,     # [15-17] angles FR <- FL
-      -21.0,     22.0,  23.0,     # [18-20] angles RL <- RR
-      -18.0,     19.0,  20.0,     # [21-23] angles RR <- RL
+        # 0-8: base states and command
+      -0.0001,    1.0,  -2.0,     # [0-2]   w_local (-wx, wy, -wz)
+        3.0,     -4.0,   5.0,     # [3-5]   g_local (gx, -gy, gz)
+        6.0,     -7.0,  -8.0,     # [6-8]   command (vx, -vy, -wz)
 
-        # 24-35: joint_vels (qvel)
-      -27.0,     28.0,  29.0,     # [24-26] joint_vels FL <- FR
-      -24.0,     25.0,  26.0,     # [27-29] joint_vels FR <- FL
-      -33.0,     34.0,  35.0,     # [30-32] joint_vels RL <- RR
-      -30.0,     31.0,  32.0,     # [33-35] joint_vels RR <- RL
+        # 9-20: angles (qpos - default_ap_pose)
+      -12.0,     13.0,  14.0,     # [9-11]  angles FL <- FR
+       -9.0,     10.0,  11.0,     # [12-14] angles FR <- FL
+      -18.0,     19.0,  20.0,     # [15-17] angles RL <- RR
+      -15.0,     16.0,  17.0,     # [18-20] angles RR <- RL
 
-        # 36-47: last_action
-      -39.0,     40.0,  41.0,     # [36-38] last_action FL <- FR
-      -36.0,     37.0,  38.0,     # [39-41] last_action FR <- FL
-      -45.0,     46.0,  47.0,     # [42-44] last_action RL <- RR
-      -42.0,     43.0,  44.0,     # [45-47] last_action RR <- RL
+        # 21-32: joint_vels (qvel)
+      -24.0,     25.0,  26.0,     # [21-23] joint_vels FL <- FR
+      -21.0,     22.0,  23.0,     # [24-26] joint_vels FR <- FL
+      -30.0,     31.0,  32.0,     # [27-29] joint_vels RL <- RR
+      -27.0,     28.0,  29.0,     # [30-32] joint_vels RR <- RL
 
-        # 48-59: kin_ref (NEWLY INSERTED)
-      -51.0,     52.0,  53.0,     # [48-50] kin_ref FL <- FR
-      -48.0,     49.0,  50.0,     # [51-53] kin_ref FR <- FL
-      -57.0,     58.0,  59.0,     # [54-56] kin_ref RL <- RR
-      -54.0,     55.0,  56.0,     # [57-59] kin_ref RR <- RL
+        # 33-44: last_action
+      -36.0,     37.0,  38.0,     # [33-35] last_action FL <- FR
+      -33.0,     34.0,  35.0,     # [36-38] last_action FR <- FL
+      -42.0,     43.0,  44.0,     # [39-41] last_action RL <- RR
+      -39.0,     40.0,  41.0,     # [42-44] last_action RR <- RL
 
-        # 60-71: anchor_action (SHIFTED)
-      -63.0,     64.0,  65.0,     # [60-62] anchor_action FL <- FR
-      -60.0,     61.0,  62.0,     # [63-65] anchor_action FR <- FL
-      -69.0,     70.0,  71.0,     # [66-68] anchor_action RL <- RR
-      -66.0,     67.0,  68.0,     # [69-71] anchor_action RR <- RL
+        # 45-56: kin_ref
+      -48.0,     49.0,  50.0,     # [45-47] kin_ref FL <- FR
+      -45.0,     46.0,  47.0,     # [48-50] kin_ref FR <- FL
+      -54.0,     55.0,  56.0,     # [51-53] kin_ref RL <- RR
+      -51.0,     52.0,  53.0,     # [54-56] kin_ref RR <- RL
+
+        # 57-68: anchor_action
+      -60.0,     61.0,  62.0,     # [57-59] anchor_action FL <- FR
+      -57.0,     58.0,  59.0,     # [60-62] anchor_action FR <- FL
+      -66.0,     67.0,  68.0,     # [63-65] anchor_action RL <- RR
+      -63.0,     64.0,  65.0,     # [66-68] anchor_action RR <- RL
     )
     rl_config.act_permutation = (
       -3.0, 4.0, 5.0,         # FL <- FR

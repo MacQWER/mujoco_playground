@@ -40,12 +40,34 @@ LOCAL_LINVEL_SENSOR = "local_linvel"
 ACCELEROMETER_SENSOR = "accelerometer"
 GYRO_SENSOR = "gyro"
 
-# Anchor Policy 相关常量
-ANCHOR_OBS_DIM = 72
-ANCHOR_ACT_DIM = 12
-ANCHOR_PATH = '/data/mujoco_playground/mujoco_playground/experimental/learning/checkpoints/Go2Trot-20260316-155000/trotting_apg_2_hz_policy.pkl'
+# Observation layout / scaling.
+OBS_W_LOCAL_SCALE = 0.25
+OBS_JOINT_VELS_SCALE = 0.05
 
-RESIDUAL_OBS_DIM = 72
+OBS_W_LOCAL_DIM = 3
+OBS_G_LOCAL_DIM = 3
+OBS_COMMAND_DIM = 3
+OBS_ANGLES_DIM = 12
+OBS_JOINT_VELS_DIM = 12
+OBS_LAST_ACTION_DIM = 12
+OBS_KIN_REF_DIM = 12
+OBS_ANCHOR_ACTION_DIM = 12
+
+OBS_W_LOCAL_SLICE = slice(0, 3)
+OBS_G_LOCAL_SLICE = slice(3, 6)
+OBS_COMMAND_SLICE = slice(6, 9)
+OBS_ANGLES_SLICE = slice(9, 21)
+OBS_JOINT_VELS_SLICE = slice(21, 33)
+OBS_LAST_ACTION_SLICE = slice(33, 45)
+OBS_KIN_REF_SLICE = slice(45, 57)
+OBS_ANCHOR_ACTION_SLICE = slice(57, 69)
+
+# Anchor Policy 相关常量
+ANCHOR_OBS_DIM = OBS_ANCHOR_ACTION_SLICE.stop
+ANCHOR_ACT_DIM = 12
+ANCHOR_PATH = '/data/mujoco_playground/mujoco_playground/experimental/learning/checkpoints/Go2Trot-20260320-100219/trotting_apg_2_hz_policy.pkl'
+
+RESIDUAL_OBS_DIM = ANCHOR_OBS_DIM
 RESIDUAL_ACT_DIM = 12
 
 # pattern generator 相关常量
