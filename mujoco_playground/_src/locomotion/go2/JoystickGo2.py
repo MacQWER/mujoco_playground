@@ -16,7 +16,7 @@ from mujoco_playground._src import mjx_env
 from mujoco_playground._src.locomotion.go2.base import Go2Env
 from mujoco_playground._src.locomotion.go2 import go2_constants as consts
 from mujoco_playground._src.locomotion.go2.TrotUtil import (
-    make_kinematic_ref, cos_wave, rotate_inv, rotate, get_anchor_inference_fn
+    make_kinematic_ref, cos_wave, dcos_wave, rotate_inv, rotate, get_anchor_inference_fn
 )
 
 # ----------------- Default Config -----------------
@@ -70,28 +70,34 @@ def default_config() -> config_dict.ConfigDict:
     # Tracking
     cfg.rewards.scales.tracking_lin_vel = 3.0
     cfg.rewards.scales.tracking_ang_vel = 2.0
+    cfg.rewards.scales.base_height_tracking = 0.5
+    cfg.rewards.scales.joint_pose_tracking = 0.1
+    cfg.rewards.scales.joint_vel_tracking = 0.01
+    cfg.rewards.scales.gait_phase_tracking = 1.0
     
     # Anchor Heuristics
     cfg.rewards.scales.feet_traj = -5.0
     
     # Smoothness & Physics (新增)
-    cfg.rewards.scales.lin_vel_z = -0.5
+    cfg.rewards.scales.lin_vel_z = -1.0
     cfg.rewards.scales.ang_vel_xy = -0.1
     cfg.rewards.scales.orientation = -10.0
     cfg.rewards.scales.torques = -0.0002
-    cfg.rewards.scales.action_rate = -0.05
+    cfg.rewards.scales.action_rate = -0.01
     cfg.rewards.scales.energy = -0.001
     
     # Feet Interaction (新增)
     cfg.rewards.scales.feet_slip = -1.0
-    cfg.rewards.scales.feet_clearance = -0.5
     cfg.rewards.scales.feet_air_time = 5.0
     cfg.rewards.scales.dof_pos_limits = -1.0
     cfg.rewards.scales.stand_still = -0.5
     cfg.rewards.scales.termination = -10.0  # Soft termination
     
     cfg.rewards.tracking_sigma = 0.25
-    cfg.rewards.max_foot_height = 0.075
+    cfg.rewards.base_height_sigma = 0.01
+    cfg.rewards.joint_pose_tracking_sigma = 0.5
+    cfg.rewards.joint_vel_tracking_sigma = 2.0
+    cfg.rewards.gait_phase_tracking_sigma = 0.25
     cfg.soft_joint_pos_limit_factor = 0.95
 
     # 5. Anchor 配置
@@ -172,12 +178,17 @@ class JoystickGo2(Go2Env):
         
         # 5. Kinematic Reference
         kinematic_ref_qpos = make_kinematic_ref(cos_wave, step_k, scale=gait_scale, dt=self.dt)
+        kinematic_ref_qvel = make_kinematic_ref(dcos_wave, step_k, scale=gait_scale, dt=self.dt)
         self.l_cycle = int(kinematic_ref_qpos.shape[0])
 
         kinematic_ref_qpos = np.array(kinematic_ref_qpos) + np.array(self._default_ap_pose)
         ref_qs = np.tile(self._init_q.reshape(1, 19), (self.l_cycle, 1))
         ref_qs[:, 7:] = kinematic_ref_qpos
         self.kinematic_ref_qpos = jp.array(ref_qs)
+
+        ref_qvels = np.zeros((self.l_cycle, 18))
+        ref_qvels[:, 6:] = np.array(kinematic_ref_qvel)
+        self.kinematic_ref_qvel = jp.array(ref_qvels)
         
         # 6. Command & Raibert Offset
         self._cmd_a = jp.array(self._config.command_config.a)
@@ -201,6 +212,7 @@ class JoystickGo2(Go2Env):
         self.foot_offsets_xy = foot_offset_local[:, :2]
 
         self.base_mass = self.mj_model.body("base").mass
+        self._nominal_base_height = self._init_q[2]
 
         # Step height parameters (coupled to step length; capped)
         self._step_height_max = float(getattr(self._config.env, "step_height", 0.1128))
@@ -365,10 +377,13 @@ class JoystickGo2(Go2Env):
         # Anchor Inference
         anchor_obs = self._get_anchor_obs(data, state_info)
         state_info["rng"], key_anchor = jax.random.split(state_info["rng"])
-        anchor_act, _ = self._anchor_inference_fn(anchor_obs, key_anchor)
-        anchor_act = jp.clip(anchor_act, -1.0, 1.0)
-        anchor_act = jax.lax.stop_gradient(anchor_act)
-        
+        if self._anchor_inference_fn is None:
+            anchor_act = jp.zeros(12)
+        else:
+            anchor_act, _ = self._anchor_inference_fn(anchor_obs, key_anchor)
+            anchor_act = jp.clip(anchor_act, -1.0, 1.0)
+            anchor_act = jax.lax.stop_gradient(anchor_act)
+
         state_info['anchor_action'] = anchor_act
 
         residual_obs = self._get_residual_obs(data, state_info)
@@ -380,83 +395,84 @@ class JoystickGo2(Go2Env):
 
     # -------- Step --------
     def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
-        # 0. add disturbance (新增)
+        # 0. Add disturbance.
         if self._config.disturbance.enable:
             state = self._maybe_apply_perturbation(state)
-        # 1. Action Mixing
+
+        info = state.info
+
+        # 1. Mix anchor and residual actions into the applied control.
         action = jp.clip(action, -1.0, 1.0)
-        anchor_act = state.info['anchor_action']
-        mixed_action = anchor_act * self.anchor_action_scale + action * self.residual_action_scale
+        anchor_act = info['anchor_action']
+        mixed_action = (
+            anchor_act * self.anchor_action_scale
+            + action * self.residual_action_scale
+        )
         ctrl = self.action_loc + mixed_action
-        
-        # 2. Physics Step
+
+        # 2. Physics step.
         data = mjx_env.step(self.mjx_model, state.data, ctrl, self.n_substeps)
 
-        # 3. 状态更新 (新增逻辑)
+        # 3. Contact-derived transition quantities use pre-step history.
         foot_pos = data.site_xpos[self._feet_site_id]
         foot_z = foot_pos[..., -1]
-        contact = jax.nn.sigmoid((0.025 - foot_z) * 100.0) 
-        
-        delta_contact = jax.nn.relu(contact - state.info["last_contact"])
-        first_contact = (state.info["feet_air_time"] > 0.0) * delta_contact
-        state.info["feet_air_time"] += self.dt
-        state.info["swing_peak"] = jp.maximum(state.info["swing_peak"], foot_z)
+        contact = jax.nn.sigmoid((0.025 - foot_z) * 100.0)
+        delta_contact = jax.nn.relu(contact - info["last_contact"])
+        first_contact = (info["feet_air_time"] > 0.0) * delta_contact
+        feet_air_time = info["feet_air_time"] + self.dt
+        swing_peak = jp.maximum(info["swing_peak"], foot_z)
 
-        # 4. Command Update
-        state.info['rng'], key_cmd, key_time = jax.random.split(state.info['rng'], 3)
-        state.info['steps_until_next_cmd'] -= 1
-        should_update = state.info['steps_until_next_cmd'] <= 0
-        new_cmd = self.sample_command(key_cmd, state.info['command'])
-        new_timer = jp.round(jax.random.exponential(key_time) * 2.5 / self.dt).astype(jp.int32)
-        state.info['command'] = jp.where(should_update, new_cmd, state.info['command'])
-        state.info['steps_until_next_cmd'] = jp.where(should_update, new_timer, state.info['steps_until_next_cmd'])
+        # 4. Advance gait-phase references for this transition reward.
+        self._update_raibert_target(data, info)
+        info['step'] += 1
+        self._update_foot_cycloid_ref(info)
 
-        # 5. Raibert & Anchor
-        self._update_raibert_target(data, state.info)
-        state.info['step'] += 1
-        self._update_foot_cycloid_ref(state.info)
-        state.info['last_action'] = ctrl
-
-        anchor_obs = self._get_anchor_obs(data, state.info)
-        next_anchor_act, _ = self._anchor_inference_fn(anchor_obs, key_cmd) 
-        next_anchor_act = jp.clip(next_anchor_act, -1.0, 1.0)
-        next_anchor_act = jax.lax.stop_gradient(next_anchor_act)
-        state.info['anchor_action'] = next_anchor_act
-
-        # 6. Rewards & Termination (修改逻辑)
+        # 5. Reward and termination use the transition state plus pre-step action history.
         up_z = self.get_upvector(data)[-1]
-        
-        # Hard Termination (翻车保护)
         tilt_threshold = jp.cos(jp.deg2rad(45.0))
         fall_termination = up_z < tilt_threshold
         done = jp.where(fall_termination, 1.0, 0.0)
-        
-        # Soft Done
         soft_done = jax.nn.sigmoid((tilt_threshold - up_z) * 100.0)
 
         reward_kwargs = {
             'first_contact': first_contact,
             'contact': contact,
-            'soft_done': soft_done
+            'soft_done': soft_done,
         }
-        
-        reward_dict = self._get_reward(data, action, state.info, reward_kwargs, done)
+        reward_dict = self._get_reward(data, ctrl, info, reward_kwargs, done)
         reward = sum(reward_dict.values()) * self.dt
-        
-        # Reset counters
-        state.info["feet_air_time"] *= (1.0 - contact)
-        state.info["last_contact"] = contact
-        state.info["swing_peak"] *= (1.0 - contact)
 
-        state.info["last_residual"] = action 
-        
+        # 6. Commit post-step history for the next observation / next action.
+        info["feet_air_time"] = feet_air_time * (1.0 - contact)
+        info["last_contact"] = contact
+        info["swing_peak"] = swing_peak * (1.0 - contact)
+        info["last_residual"] = action
+        info["last_action"] = ctrl
+
+        info['rng'], key_cmd, key_time = jax.random.split(info['rng'], 3)
+        steps_until_next_cmd = info['steps_until_next_cmd'] - 1
+        should_update = steps_until_next_cmd <= 0
+        new_cmd = self.sample_command(key_cmd, info['command'])
+        new_timer = jp.round(jax.random.exponential(key_time) * 2.5 / self.dt).astype(jp.int32)
+        info['command'] = jp.where(should_update, new_cmd, info['command'])
+        info['steps_until_next_cmd'] = jp.where(should_update, new_timer, steps_until_next_cmd)
+
+        anchor_obs = self._get_anchor_obs(data, info)
+        if self._anchor_inference_fn is None:
+            next_anchor_act = jp.zeros(12)
+        else:
+            next_anchor_act, _ = self._anchor_inference_fn(anchor_obs, key_cmd)
+            next_anchor_act = jp.clip(next_anchor_act, -1.0, 1.0)
+            next_anchor_act = jax.lax.stop_gradient(next_anchor_act)
+        info['anchor_action'] = next_anchor_act
+
         for k, v in reward_dict.items():
             state.metrics[k] = v
-        state.info['reward_tuple'] = reward_dict
+        info['reward_tuple'] = reward_dict
 
-        # 7. Obs (dict)
-        residual_obs = self._get_residual_obs(data, state.info)
-        
+        # 7. Next observation.
+        residual_obs = self._get_residual_obs(data, info)
+
         return state.replace(data=data, obs=residual_obs, reward=reward, done=done)
 
     # ----------------- Disturbance -----------------
@@ -746,6 +762,10 @@ class JoystickGo2(Go2Env):
             # --- 1. Tracking Task ---
             "tracking_lin_vel": self._reward_tracking_lin_vel(data, info, extra_args) * scales.tracking_lin_vel,
             "tracking_ang_vel": self._reward_tracking_ang_vel(data, info, extra_args) * scales.tracking_ang_vel,
+            "base_height_tracking": self._reward_base_height_tracking(data, info, extra_args) * scales.base_height_tracking,
+            "joint_pose_tracking": self._reward_joint_pose_tracking(data, info, extra_args) * scales.joint_pose_tracking,
+            "joint_vel_tracking": self._reward_joint_vel_tracking(data, info, extra_args) * scales.joint_vel_tracking,
+            "gait_phase_tracking": self._reward_gait_phase_tracking(data, info, extra_args) * scales.gait_phase_tracking,
             
             # --- 2. Anchor Heuristics (Masked) ---
             # 静止时关掉 Anchor 引导，避免原地踏步
@@ -763,7 +783,6 @@ class JoystickGo2(Go2Env):
             
             # --- 5. Feet Interaction (Masked) ---
             "feet_slip":       self._cost_feet_slip(data, info, extra_args) * scales.feet_slip,
-            "feet_clearance":  self._cost_feet_clearance(data, info, extra_args) * scales.feet_clearance,
             "feet_air_time":   self._reward_feet_air_time(data, info, extra_args) * scales.feet_air_time,
             
             # --- 6. Safety & Limits ---
@@ -794,6 +813,35 @@ class JoystickGo2(Go2Env):
         cmd = info['command'][2]
         err = jp.square(cmd - w_local[2])
         return jp.exp(-err / self._config.rewards.tracking_sigma)
+
+    def _reward_base_height_tracking(self, data, info, extra_args):
+        del info, extra_args
+        err = jp.square(data.qpos[2] - self._nominal_base_height)
+        return jp.exp(-err / self._config.rewards.base_height_sigma)
+
+    def _reward_joint_pose_tracking(self, data, info, extra_args):
+        del extra_args
+        step_idx = jp.array(info['step'] % self.l_cycle, int)
+        ref_qpos = self.kinematic_ref_qpos[step_idx][7:]
+        qpos = data.qpos[7:19]
+        weight = jp.array([1.0, 1.0, 0.1] * 4)
+        err = jp.sum(jp.square(qpos - ref_qpos) * weight)
+        return jp.exp(-err / self._config.rewards.joint_pose_tracking_sigma)
+
+    def _reward_joint_vel_tracking(self, data, info, extra_args):
+        del extra_args
+        step_idx = jp.array(info['step'] % self.l_cycle, int)
+        ref_qvel = self.kinematic_ref_qvel[step_idx][6:]
+        qvel = data.qvel[6:]
+        err = jp.sum(jp.square(qvel - ref_qvel))
+        return jp.exp(-err / self._config.rewards.joint_vel_tracking_sigma)
+
+    def _reward_gait_phase_tracking(self, data, info, extra_args):
+        del data
+        contact = extra_args['contact']
+        expected_stance = 1.0 - info['foot_swing']
+        err = jp.sum(jp.square(contact - expected_stance))
+        return jp.exp(-err / self._config.rewards.gait_phase_tracking_sigma)
 
     # --- 2. Anchor Heuristics (With Masks) ---
 
@@ -832,7 +880,7 @@ class JoystickGo2(Go2Env):
     # --- 4. Action Smoothness ---
 
     def _cost_action_rate(self, data, info, extra_args, current_action):
-        return jp.sum(jp.square(current_action - info['last_residual']))
+        return jp.sum(jp.square(current_action - info['last_action']))
 
     # --- 5. Feet Interaction (With Masks) ---
 
@@ -850,22 +898,6 @@ class JoystickGo2(Go2Env):
             return jp.sum(vel_xy_norm_sq * effective_contact) * extra_args['move_mask']
         
         return 0.0
-
-    def _cost_feet_clearance(self, data, info, extra_args):
-        # 无需 Mask，因为静止时 vel_norm 为 0，Cost 自动为 0
-        if self._foot_linvel_sensor_adr is not None:
-            feet_vel = data.sensordata[self._foot_linvel_sensor_adr]
-            vel_xy = feet_vel[..., :2]
-            vel_norm = jp.sqrt(jp.linalg.norm(vel_xy, axis=-1))
-            
-            foot_pos = data.site_xpos[self._feet_site_id]
-            foot_z = foot_pos[..., -1]
-            
-            delta = jp.abs(foot_z - self._config.rewards.max_foot_height)
-            return jp.sum(delta * vel_norm)
-            
-        return 0.0
-
     def _reward_feet_air_time(self, data, info, extra_args):
         air_time = info['feet_air_time']
         first_contact = extra_args['first_contact']
@@ -896,139 +928,239 @@ class JoystickGo2(Go2Env):
 
     def check_phase_alignment(self):
         """
-        [终极验证版 - 已修复 MockData Bug]
-        同时检查以下内容是否严格对齐：
-        1. Reward: 抬腿高度波形
-        2. Raibert: 落点目标更新
-        3. Ref Kino: 参考动作的关节角度
-        4. Swing mask 与相位切换
-        并额外记录一个脚的实际高度（来自当前模型前向运动学）
+        Plot a consolidated phase-alignment dashboard for all phase-coupled terms.
+
+        The check overlays the current-phase reference against a half-cycle-shifted
+        reference, so if any reward term is accidentally offset by half a gait cycle,
+        it should show up immediately as the shifted curve looking "better" than the
+        current-phase curve.
         """
-        print("Running Ultimate Phase Alignment Check (Height + Actual + Raibert + Kino)...")
+        print("Running full phase alignment check (kino + feet_traj + gait rewards)...")
         import matplotlib.pyplot as plt
 
-        # 模拟 4 个周期
         steps = np.arange(self.step_k * 4)
+        foot_idx = 0  # FL
+        half_cycle = self.step_k
 
-        # 日志
-        height_target_log = []   # Reward 要求的高度（摆线参考）
-        height_actual_log = []   # 实际高度（当前模型前向运动学）
-        raibert_change_log = []  # Raibert 落点是否发生更新 (Event)
-        kino_thigh_log = []      # Ref Kino 中的髋关节角度
-        swing_mask_fl_log = []   # FL 摆动 mask
-        swing_mask_fr_log = []   # FR 摆动 mask
-        foot_idx = 0             # 随便选一个脚，这里选 FL
+        height_target_log = []
+        height_actual_log = []
+        raibert_change_log = []
+        kino_thigh_log = []
+        swing_mask_fl_log = []
+        swing_mask_fr_log = []
 
-        # 伪造一个恒定的指令：向前走 1.0 m/s
+        joint_pose_rew_log = []
+        joint_pose_half_rew_log = []
+        joint_pose_err_log = []
+        joint_pose_half_err_log = []
+
+        joint_vel_rew_log = []
+        joint_vel_half_rew_log = []
+        joint_vel_err_log = []
+        joint_vel_half_err_log = []
+
+        gait_rew_log = []
+        gait_half_rew_log = []
+        gait_err_log = []
+        gait_half_err_log = []
+
+        feet_traj_err_log = []
+        feet_traj_half_err_log = []
+        feet_traj_pos_err_log = []
+        feet_traj_pos_half_err_log = []
+        feet_traj_vel_err_log = []
+        feet_traj_vel_half_err_log = []
+
         cmd = jp.array([1.0, 0.0, 0.0])
 
-        # 初始化状态用于 Raibert 迭代
-        info = {
-            'step': jp.array(0, dtype=jp.int32),
-            'k0': jp.array(0, dtype=jp.int32),
-            'command': cmd,
-            'xy0': jp.zeros((4, 2)),
-            'xy*': jp.zeros((4, 2)),
-            'foot_phase': 0.0,
-            'foot_swing': jp.zeros(4),
-            'foot_ref_xy': jp.zeros((4, 2)),
-            'foot_ref_z': jp.zeros(4),
-            'foot_ref_pos': jp.zeros((4, 3)),
-            'foot_ref_v_xy': jp.zeros((4, 2)),
-            'z0': jp.zeros(4),
-        }
+        def make_phase_info(step: int):
+            return {
+                'step': jp.array(step, dtype=jp.int32),
+                'k0': jp.array(0, dtype=jp.int32),
+                'command': cmd,
+                'xy0': jp.zeros((4, 2)),
+                'xy*': jp.zeros((4, 2)),
+                'foot_phase': 0.0,
+                'foot_swing': jp.zeros(4),
+                'foot_ref_xy': jp.zeros((4, 2)),
+                'foot_ref_z': jp.zeros(4),
+                'foot_ref_pos': jp.zeros((4, 3)),
+                'foot_ref_v_xy': jp.zeros((4, 2)),
+                'z0': jp.zeros(4),
+            }
 
-        last_fl_target_x = 0.0
-
-        for s in steps:
-            # 更新 step
-            info['step'] = jp.array(s, dtype=jp.int32)
-            step_idx = int(s % self.l_cycle)
-
-            # Build ref data
+        def build_ref_data(step_idx: int):
             qpos_ref = self.kinematic_ref_qpos[step_idx]
-            ref_data = mjx_env.make_data(
+            qvel_ref = self.kinematic_ref_qvel[step_idx]
+            d = mjx_env.make_data(
                 self.mj_model,
                 qpos=qpos_ref,
-                qvel=jp.zeros(self.mjx_model.nv),
+                qvel=qvel_ref,
                 ctrl=jp.zeros(self.mjx_model.nu),
                 impl=self.mjx_model.impl.value,
                 nconmax=self._config.nconmax,
                 njmax=self._config.njmax,
             )
-            ref_data = mjx.forward(self.mjx_model, ref_data)
+            return mjx.forward(self.mjx_model, d)
 
-            # Update Raibert + cycloid ref
-            self._update_raibert_target(ref_data, info)
+        def prepare_info(step: int, data: mjx.Data):
+            info = make_phase_info(step)
+            self._update_raibert_target(data, info)
             self._update_foot_cycloid_ref(info)
+            return info
 
-            # --- 1. Check Reward (Height Wave) ---
-            h_target = float(info['foot_ref_z'][foot_idx])
-            height_target_log.append(h_target)
+        def foot_traj_terms(data: mjx.Data, info: dict[str, Any]):
+            curr_feet = data.geom_xpos[self.feet_inds]
+            ref_pos = info['foot_ref_pos']
+            swing_mask = info['foot_swing'][:, None]
+            pos_err = jp.sum(jp.square((curr_feet - ref_pos) * swing_mask))
 
-            h_actual = float(ref_data.geom_xpos[self.feet_inds[foot_idx], 2])
-            height_actual_log.append(h_actual)
+            vel_err = jp.array(0.0)
+            if self._foot_linvel_sensor_adr is not None:
+                feet_vel = data.sensordata[self._foot_linvel_sensor_adr]
+                vel_xy = feet_vel[..., :2]
+                ref_v_xy = info['foot_ref_v_xy']
+                vel_err = jp.sum(jp.square((vel_xy - ref_v_xy) * swing_mask[:, :2]))
 
-            # --- 2. Check Raibert (Target Update) ---
+            total_err = pos_err + self._foot_traj_vel_weight * vel_err
+            return float(total_err), float(pos_err), float(vel_err)
+
+        def gait_terms(data: mjx.Data, info: dict[str, Any]):
+            foot_pos = data.site_xpos[self._feet_site_id]
+            foot_z = foot_pos[..., -1]
+            contact = jax.nn.sigmoid((0.025 - foot_z) * 100.0)
+            expected_stance = 1.0 - info['foot_swing']
+            err = jp.sum(jp.square(contact - expected_stance))
+            rew = jp.exp(-err / self._config.rewards.gait_phase_tracking_sigma)
+            return float(rew), float(err)
+
+        last_fl_target_x = 0.0
+
+        for s in steps:
+            step_idx = int(s % self.l_cycle)
+            half_idx = int((s + half_cycle) % self.l_cycle)
+
+            ref_data = build_ref_data(step_idx)
+            info = prepare_info(s, ref_data)
+            half_info = prepare_info(s + half_cycle, ref_data)
+
+            height_target_log.append(float(info['foot_ref_z'][foot_idx]))
+            height_actual_log.append(float(ref_data.geom_xpos[self.feet_inds[foot_idx], 2]))
+
             current_fl_target_x = float(info['xy*'][0, 0])
-
             if s > 0 and abs(current_fl_target_x - last_fl_target_x) > 1e-4:
                 raibert_change_log.append(0.12)
             else:
                 raibert_change_log.append(0.0)
-
             last_fl_target_x = current_fl_target_x
 
-            # --- 3. Check Ref Kino (Joint Angle) ---
             kin_ref = self.kinematic_ref_qpos[step_idx]
-            fl_thigh_angle = float(kin_ref[8])
-            kino_thigh_log.append(fl_thigh_angle)
+            kino_thigh_log.append(float(kin_ref[8]))
             swing_mask_fl_log.append(float(info['foot_swing'][0]))
             swing_mask_fr_log.append(float(info['foot_swing'][1]))
 
-        # --- 绘图验证 ---
-        fig, ax1 = plt.subplots(figsize=(12, 6))
+            pose_weight = jp.array([1.0, 1.0, 0.1] * 4)
+            qpos = ref_data.qpos[7:19]
+            qvel = ref_data.qvel[6:]
+            ref_qpos = self.kinematic_ref_qpos[step_idx][7:]
+            ref_qpos_half = self.kinematic_ref_qpos[half_idx][7:]
+            ref_qvel = self.kinematic_ref_qvel[step_idx][6:]
+            ref_qvel_half = self.kinematic_ref_qvel[half_idx][6:]
 
-        # 1. Height target + actual (Green + Orange)
-        ax1.plot(steps, height_target_log, 'g-', label='Reward Target Height (FL)', linewidth=2)
-        ax1.plot(steps, height_actual_log, color='orange', linestyle='-', label='Actual Height (FL)', linewidth=1.5, alpha=0.8)
-        ax1.set_ylabel('Height (m)')
-        ax1.set_ylim(0, 0.15)
+            pose_err = float(jp.sum(jp.square(qpos - ref_qpos) * pose_weight))
+            pose_half_err = float(jp.sum(jp.square(qpos - ref_qpos_half) * pose_weight))
+            joint_pose_err_log.append(pose_err)
+            joint_pose_half_err_log.append(pose_half_err)
+            joint_pose_rew_log.append(float(jp.exp(-pose_err / self._config.rewards.joint_pose_tracking_sigma)))
+            joint_pose_half_rew_log.append(float(jp.exp(-pose_half_err / self._config.rewards.joint_pose_tracking_sigma)))
 
-        # 2. Ref Kino (Blue)
-        ax2 = ax1.twinx()
-        ax2.plot(steps, kino_thigh_log, 'b--', label='Ref Kino: FL Thigh Angle', linewidth=2, alpha=0.6)
-        ax2.set_ylabel('Joint Angle (rad)')
+            vel_err = float(jp.sum(jp.square(qvel - ref_qvel)))
+            vel_half_err = float(jp.sum(jp.square(qvel - ref_qvel_half)))
+            joint_vel_err_log.append(vel_err)
+            joint_vel_half_err_log.append(vel_half_err)
+            joint_vel_rew_log.append(float(jp.exp(-vel_err / self._config.rewards.joint_vel_tracking_sigma)))
+            joint_vel_half_rew_log.append(float(jp.exp(-vel_half_err / self._config.rewards.joint_vel_tracking_sigma)))
 
-        # 3. Raibert Update (Red Bars)
-        ax1.bar(steps, raibert_change_log, width=1.0, color='red', alpha=0.3, label='Raibert: Target Update Event')
-        ax1.plot(steps, np.array(swing_mask_fl_log) * 0.015, color='black', linestyle='--', linewidth=1.5, label='Swing Mask FL (scaled)')
-        ax1.plot(steps, np.array(swing_mask_fr_log) * 0.015, color='gray', linestyle='--', linewidth=1.5, label='Swing Mask FR (scaled)')
+            gait_rew, gait_err = gait_terms(ref_data, info)
+            gait_half_rew, gait_half_err = gait_terms(ref_data, half_info)
+            gait_rew_log.append(gait_rew)
+            gait_half_rew_log.append(gait_half_rew)
+            gait_err_log.append(gait_err)
+            gait_half_err_log.append(gait_half_err)
 
-        # 4. 标注足端最高点（实际高度）
+            feet_traj_err, feet_pos_err, feet_vel_err = foot_traj_terms(ref_data, info)
+            feet_traj_half_err, feet_pos_half_err, feet_vel_half_err = foot_traj_terms(ref_data, half_info)
+            feet_traj_err_log.append(feet_traj_err)
+            feet_traj_half_err_log.append(feet_traj_half_err)
+            feet_traj_pos_err_log.append(feet_pos_err)
+            feet_traj_pos_half_err_log.append(feet_pos_half_err)
+            feet_traj_vel_err_log.append(feet_vel_err)
+            feet_traj_vel_half_err_log.append(feet_vel_half_err)
+
+        fig, axes = plt.subplots(4, 1, figsize=(14, 16), sharex=True)
+
+        axes[0].plot(steps, height_target_log, 'g-', label='Foot Ref Z (current)', linewidth=2)
+        axes[0].plot(steps, height_actual_log, color='orange', linestyle='-', label='Ref-Kino Foot Z', linewidth=1.5, alpha=0.85)
+        axes[0].bar(steps, raibert_change_log, width=1.0, color='red', alpha=0.25, label='Raibert target update')
+        axes[0].plot(steps, np.array(swing_mask_fl_log) * 0.015, color='black', linestyle='--', linewidth=1.5, label='Swing mask FL (scaled)')
+        axes[0].plot(steps, np.array(swing_mask_fr_log) * 0.015, color='gray', linestyle='--', linewidth=1.5, label='Swing mask FR (scaled)')
+        ax0_twin = axes[0].twinx()
+        ax0_twin.plot(steps, kino_thigh_log, 'b--', label='Ref-kino FL thigh', linewidth=2, alpha=0.6)
+        axes[0].set_ylabel('Foot Height (m)')
+        ax0_twin.set_ylabel('Joint Angle (rad)')
+        axes[0].set_title(f'Phase Alignment Dashboard (step_k={self.step_k})')
+
+        axes[1].plot(steps, joint_pose_rew_log, color='tab:blue', linewidth=2, label='joint_pose reward (current)')
+        axes[1].plot(steps, joint_pose_half_rew_log, color='tab:blue', linestyle='--', linewidth=2, label='joint_pose reward (half-cycle)')
+        axes[1].plot(steps, joint_vel_rew_log, color='tab:purple', linewidth=2, label='joint_vel reward (current)')
+        axes[1].plot(steps, joint_vel_half_rew_log, color='tab:purple', linestyle='--', linewidth=2, label='joint_vel reward (half-cycle)')
+        axes[1].set_ylabel('Reward')
+        axes[1].set_ylim(-0.05, 1.05)
+
+        axes[2].plot(steps, joint_pose_err_log, color='tab:blue', linewidth=2, label='joint_pose err (current)')
+        axes[2].plot(steps, joint_pose_half_err_log, color='tab:blue', linestyle='--', linewidth=2, label='joint_pose err (half-cycle)')
+        axes[2].plot(steps, joint_vel_err_log, color='tab:purple', linewidth=2, label='joint_vel err (current)')
+        axes[2].plot(steps, joint_vel_half_err_log, color='tab:purple', linestyle='--', linewidth=2, label='joint_vel err (half-cycle)')
+        axes[2].plot(steps, gait_err_log, color='tab:brown', linewidth=2, label='gait_phase err (current)')
+        axes[2].plot(steps, gait_half_err_log, color='tab:brown', linestyle='--', linewidth=2, label='gait_phase err (half-cycle)')
+        axes[2].set_ylabel('Error')
+
+        axes[3].plot(steps, gait_rew_log, color='tab:brown', linewidth=2, label='gait_phase reward (current)')
+        axes[3].plot(steps, gait_half_rew_log, color='tab:brown', linestyle='--', linewidth=2, label='gait_phase reward (half-cycle)')
+        axes[3].plot(steps, feet_traj_err_log, color='tab:green', linewidth=2, label='feet_traj total err (current)')
+        axes[3].plot(steps, feet_traj_half_err_log, color='tab:green', linestyle='--', linewidth=2, label='feet_traj total err (half-cycle)')
+        axes[3].plot(steps, feet_traj_pos_err_log, color='tab:olive', linewidth=1.5, alpha=0.85, label='feet_traj pos err (current)')
+        axes[3].plot(steps, feet_traj_pos_half_err_log, color='tab:olive', linestyle='--', linewidth=1.5, alpha=0.85, label='feet_traj pos err (half-cycle)')
+        axes[3].plot(steps, feet_traj_vel_err_log, color='tab:cyan', linewidth=1.5, alpha=0.85, label='feet_traj vel err (current)')
+        axes[3].plot(steps, feet_traj_vel_half_err_log, color='tab:cyan', linestyle='--', linewidth=1.5, alpha=0.85, label='feet_traj vel err (half-cycle)')
+        axes[3].set_ylabel('Reward / Error')
+        axes[3].set_xlabel('Step')
+
         height_actual_arr = np.array(height_actual_log)
         peak_idx = int(np.argmax(height_actual_arr))
         peak_step = steps[peak_idx]
         peak_height = float(height_actual_arr[peak_idx])
-        ax1.scatter([peak_step], [peak_height], color='orange', s=50, zorder=5)
-        ax1.annotate(
+        axes[0].scatter([peak_step], [peak_height], color='orange', s=50, zorder=5)
+        axes[0].annotate(
             f"peak={peak_height:.4f} m",
             xy=(peak_step, peak_height),
             xytext=(peak_step + self.step_k * 0.1, peak_height + 0.01),
-            arrowprops=dict(arrowstyle="->", color="orange", lw=1.2),
-            color="orange",
+            arrowprops=dict(arrowstyle='->', color='orange', lw=1.2),
+            color='orange',
             fontsize=10,
         )
 
-        plt.title(f"Multi-Phase Alignment Check (Step K={self.step_k})")
-        plt.axvspan(0, self.step_k, color='gray', alpha=0.1, label='Even Step (Stance)')
-        plt.axvspan(self.step_k, self.step_k*2, color='green', alpha=0.1, label='Odd Step (Swing)')
+        for ax in axes:
+            ax.axvspan(0, self.step_k, color='gray', alpha=0.08)
+            ax.axvspan(self.step_k, self.step_k * 2, color='green', alpha=0.06)
+            ax.grid(True, alpha=0.3)
+            ax.legend(loc='upper left', ncol=2)
 
-        lines1, labels1 = ax1.get_legend_handles_labels()
-        lines2, labels2 = ax2.get_legend_handles_labels()
-        ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
+        lines0, labels0 = axes[0].get_legend_handles_labels()
+        lines0b, labels0b = ax0_twin.get_legend_handles_labels()
+        axes[0].legend(lines0 + lines0b, labels0 + labels0b, loc='upper left', ncol=2)
 
-        plt.grid(True)
+        plt.tight_layout()
         plt.show()
 
 

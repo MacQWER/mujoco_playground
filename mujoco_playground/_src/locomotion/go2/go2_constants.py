@@ -65,10 +65,13 @@ OBS_ANCHOR_ACTION_SLICE = slice(57, 69)
 # Anchor Policy 相关常量
 ANCHOR_OBS_DIM = OBS_ANCHOR_ACTION_SLICE.stop
 ANCHOR_ACT_DIM = 12
-ANCHOR_PATH = '/data/mujoco_playground/mujoco_playground/experimental/learning/checkpoints/Go2Trot-20260320-100219/trotting_apg_2_hz_policy.pkl'
+ANCHOR_PATH = None
+# ANCHOR_PATH = '/data/mujoco_playground/mujoco_playground/experimental/learning/checkpoints/Go2Trot-20260320-100219/trotting_apg_2_hz_policy.pkl'
 
 RESIDUAL_OBS_DIM = ANCHOR_OBS_DIM
 RESIDUAL_ACT_DIM = 12
+# RESIDUAL_PATH = '/data/mujoco_playground/mujoco_playground/experimental/learning/checkpoints/Go2Joystick2-20260324-080452-apg/params.pkl'
+RESIDUAL_PATH = '/data/mujoco_playground/mujoco_playground/experimental/learning/checkpoints/Go2Joystick2-20260324-120312-apg/params.pkl'
 
 # pattern generator 相关常量
 STEP_K = 13

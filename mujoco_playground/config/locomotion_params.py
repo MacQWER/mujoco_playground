@@ -113,7 +113,7 @@ def brax_apg_config(
     #   new[i] = sign(perm[i]) * old[floor(abs(perm[i]) + 1e-3)]
     # Use -0.0001 to represent "- index 0".
     rl_config.sym_loss = True
-    rl_config.sym_coef = 1.0
+    rl_config.sym_coef = 2.0
     rl_config.sym_obs_key = "state"
     rl_config.obs_permutation = (
         # 0-8: base states and command
