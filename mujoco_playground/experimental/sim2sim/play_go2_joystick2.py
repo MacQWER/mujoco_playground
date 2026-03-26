@@ -7,7 +7,7 @@ from etils import epath
 import mediapy as media
 
 from mujoco_playground._src.locomotion.go2 import go2_constants as consts
-from mujoco_playground._src.locomotion.go2.TrotUtil import (
+from mujoco_playground._src.locomotion.go2.Util.TrotUtil import (
     cos_wave,
     make_kinematic_ref,
     rotate_inv,

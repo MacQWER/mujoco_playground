@@ -1,0 +1,238 @@
+import jax
+import jax.numpy as jp
+from mujoco_playground._src.locomotion.go2.Util.TrotUtil import quaternion_to_rotation_6d, rotate_inv
+
+# =========================================================================
+# Trot Rewards
+# =========================================================================
+
+def reference_tracking(data, info, cfg, **kwargs):
+    """Reward for tracking the reference trajectory (position, rotation, velocity)."""
+    ref_data = kwargs['ref_data']
+    f = lambda a, b: ((a - b) ** 2).sum(-1).mean()
+
+    mse_pos = f(data.xpos[1:], ref_data.xpos[1:])
+    mse_rot = f(quaternion_to_rotation_6d(data.xquat[1:]), quaternion_to_rotation_6d(ref_data.xquat[1:]))
+    mse_vel = f(data.cvel[1:, 3:], ref_data.cvel[1:, 3:])
+    mse_ang = f(data.cvel[1:, :3], ref_data.cvel[1:, :3])
+
+    return mse_pos + 0.1 * mse_rot + 0.01 * mse_vel + 0.001 * mse_ang
+
+
+def min_reference_tracking(data, info, cfg, **kwargs):
+    """Simplified reference tracking focusing on joint positions and velocities."""
+    ref_qpos = kwargs['ref_qpos']
+    ref_qvel = kwargs['ref_qvel']
+
+    pos = jp.concatenate([data.qpos[:3], data.qpos[7:]])
+    pos_targ = jp.concatenate([ref_qpos[:3], ref_qpos[7:]])
+    pos_err = jp.linalg.norm(pos_targ - pos)
+    vel_err = jp.linalg.norm(data.qvel - ref_qvel)
+
+    return pos_err + vel_err
+
+
+def feet_height(data, info, cfg, **kwargs):
+    """Penalty for feet height deviation from reference."""
+    ref_data = kwargs['ref_data']
+    feet_inds = kwargs['feet_inds']
+
+    feet_z = data.geom_xpos[feet_inds][:, 2]
+    feet_z_ref = ref_data.geom_xpos[feet_inds][:, 2]
+
+    return jp.sum(jp.abs(feet_z - feet_z_ref))
+
+
+def base_tracking(data, info, cfg, **kwargs):
+    """Reward for base position, rotation, and velocity tracking."""
+    ref_data = kwargs['ref_data']
+
+    pos_err = jp.linalg.norm(data.xpos[1] - ref_data.xpos[1])
+    q = data.xquat[1]
+    q_ref = ref_data.xquat[1]
+
+    dot = jp.abs(jp.dot(q, q_ref))
+    dot = jp.clip(dot, -1.0, 1.0)
+    rot_err = jp.arccos(2 * dot**2 - 1)
+    vel_err = jp.linalg.norm(data.cvel[1] - ref_data.cvel[1])
+
+    return pos_err + 0.5 * rot_err + 0.1 * vel_err
+
+
+# =========================================================================
+# Joystick Rewards
+# =========================================================================
+
+def tracking_lin_vel(data, info, cfg, **kwargs):
+    """Reward for tracking linear velocity commands."""
+    q = data.xquat[1]
+    v_local = rotate_inv(data.cvel[1, 3:], q)
+    cmd = info['command'][:2]
+    err = jp.sum(jp.square(cmd - v_local[:2]))
+    return jp.exp(-err / cfg.rewards.tracking_sigma)
+
+
+def tracking_ang_vel(data, info, cfg, **kwargs):
+    """Reward for tracking angular velocity commands."""
+    q = data.xquat[1]
+    w_local = rotate_inv(data.cvel[1, :3], q)
+    cmd = info['command'][2]
+    err = jp.square(cmd - w_local[2])
+    return jp.exp(-err / cfg.rewards.tracking_sigma)
+
+
+def base_height_tracking(data, info, cfg, **kwargs):
+    """Reward for maintaining nominal base height."""
+    del info
+    nominal_base_height = kwargs['nominal_base_height']
+    err = jp.square(data.qpos[2] - nominal_base_height)
+    return jp.exp(-err / cfg.rewards.base_height_sigma)
+
+
+def joint_pose_tracking(data, info, cfg, **kwargs):
+    """Reward for tracking kinematic reference joint positions."""
+    kinematic_ref_qpos = kwargs['kinematic_ref_qpos']
+    l_cycle = kwargs['l_cycle']
+
+    step_idx = jp.array(info['step'] % l_cycle, int)
+    ref_qpos = kinematic_ref_qpos[step_idx][7:]
+    qpos = data.qpos[7:19]
+    weight = jp.array([1.0, 1.0, 0.1] * 4)
+    err = jp.sum(jp.square(qpos - ref_qpos) * weight)
+    return jp.exp(-err / cfg.rewards.joint_pose_tracking_sigma)
+
+
+def joint_vel_tracking(data, info, cfg, **kwargs):
+    """Reward for tracking kinematic reference joint velocities."""
+    kinematic_ref_qvel = kwargs['kinematic_ref_qvel']
+    l_cycle = kwargs['l_cycle']
+
+    step_idx = jp.array(info['step'] % l_cycle, int)
+    ref_qvel = kinematic_ref_qvel[step_idx][6:]
+    qvel = data.qvel[6:]
+    err = jp.sum(jp.square(qvel - ref_qvel))
+    return jp.exp(-err / cfg.rewards.joint_vel_tracking_sigma)
+
+
+def gait_phase_tracking(data, info, cfg, **kwargs):
+    """Reward for matching contact pattern to expected gait phase."""
+    del data
+    contact = kwargs['contact']
+    expected_stance = 1.0 - info['foot_swing']
+    err = jp.sum(jp.square(contact - expected_stance))
+    return jp.exp(-err / cfg.rewards.gait_phase_tracking_sigma)
+
+
+def feet_traj(data, info, cfg, **kwargs):
+    """Cost for foot trajectory tracking based on Raibert heuristic."""
+    move_mask = kwargs.get('move_mask', 1.0)
+    feet_inds = kwargs['feet_inds']
+    foot_linvel_sensor_adr = kwargs.get('foot_linvel_sensor_adr', None)
+
+    curr_feet = data.geom_xpos[feet_inds]
+    ref_pos = info['foot_ref_pos']
+    swing_mask = info['foot_swing'][:, None]
+
+    pos_err = jp.sum(jp.square((curr_feet - ref_pos) * swing_mask))
+    vel_err = 0.0
+
+    if foot_linvel_sensor_adr is not None:
+        feet_vel = data.sensordata[foot_linvel_sensor_adr]
+        vel_xy = feet_vel[..., :2]
+        ref_v_xy = info['foot_ref_v_xy']
+        vel_err = jp.sum(jp.square((vel_xy - ref_v_xy) * swing_mask[:, :2]))
+
+    return (pos_err + cfg.env.foot_traj_vel_weight * vel_err) * move_mask
+
+
+def lin_vel_z(data, info, cfg, **kwargs):
+    """Penalty for base vertical velocity."""
+    del info, cfg, kwargs
+    return jp.square(data.cvel[1, 5])
+
+
+def ang_vel_xy(data, info, cfg, **kwargs):
+    """Penalty for base roll/pitch angular velocity."""
+    del info, cfg, kwargs
+    return jp.sum(jp.square(data.cvel[1, :2]))
+
+
+def orientation(data, info, cfg, **kwargs):
+    """Penalty for base tilt away from upright."""
+    del info, cfg
+    get_upvector = kwargs['get_upvector']
+    up_vec = get_upvector(data)
+    return jp.sum(jp.square(up_vec[:2]))
+
+
+def torques(data, info, cfg, **kwargs):
+    """Penalty for large actuator torques."""
+    del info, cfg, kwargs
+    tau = data.actuator_force
+    return jp.sqrt(jp.sum(jp.square(tau))) + jp.sum(jp.abs(tau))
+
+
+def energy(data, info, cfg, **kwargs):
+    """Penalty for joint power usage."""
+    del info, cfg, kwargs
+    return jp.sum(jp.abs(data.qvel[6:]) * jp.abs(data.actuator_force))
+
+
+def action_rate(data, info, cfg, **kwargs):
+    """Penalty for rapid action changes."""
+    del data, cfg
+    current_action = kwargs['current_action']
+    return jp.sum(jp.square(current_action - info['last_action']))
+
+
+def feet_slip(data, info, cfg, **kwargs):
+    """Penalty for foot slipping while in contact."""
+    del info, cfg
+    move_mask = kwargs.get('move_mask', 1.0)
+    contact = kwargs['contact']
+    foot_linvel_sensor_adr = kwargs.get('foot_linvel_sensor_adr', None)
+
+    if foot_linvel_sensor_adr is None:
+        return 0.0
+
+    feet_vel = data.sensordata[foot_linvel_sensor_adr]
+    vel_xy = feet_vel[..., :2]
+    vel_xy_norm_sq = jp.sum(jp.square(vel_xy), axis=-1)
+    effective_contact = jax.nn.relu(contact - 0.5) * 2.0
+    return jp.sum(vel_xy_norm_sq * effective_contact) * move_mask
+
+
+def feet_air_time(data, info, cfg, **kwargs):
+    """Reward for increasing feet air time during movement."""
+    move_mask = kwargs.get('move_mask', 1.0)
+    first_contact = kwargs['first_contact']
+    air_time = info['feet_air_time']
+
+    rew = jp.sum((air_time - 0.1) * first_contact)
+    return rew * move_mask
+
+
+def dof_pos_limits(data, info, cfg, **kwargs):
+    """Penalty for violating soft joint limits."""
+    del info, cfg
+    soft_lowers = kwargs['soft_lowers']
+    soft_uppers = kwargs['soft_uppers']
+    qpos = data.qpos[7:]
+    out_of_limits = -jp.clip(qpos - soft_lowers, None, 0.0)
+    out_of_limits += jp.clip(qpos - soft_uppers, 0.0, None)
+    return jp.sum(out_of_limits)
+
+
+def stand_still(data, info, cfg, **kwargs):
+    """Penalty for moving joints when the robot should be standing still."""
+    still_mask = kwargs.get('still_mask', 1.0)
+    default_ap_pose = kwargs['default_ap_pose']
+    qpos = data.qpos[7:]
+
+    return jp.sum(jp.abs(qpos - default_ap_pose)) * still_mask
+
+
+def termination(data, info, cfg, **kwargs):
+    """Soft termination penalty."""
+    del data, info, cfg
+    return kwargs['soft_done']

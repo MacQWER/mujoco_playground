@@ -14,7 +14,7 @@ os.environ['MUJOCO_GL'] = 'egl'
 
 # 导入 Go2 常量与工具函数
 from mujoco_playground._src.locomotion.go2 import go2_constants as consts
-from mujoco_playground._src.locomotion.go2.TrotUtil import (
+from mujoco_playground._src.locomotion.go2.Util.TrotUtil import (
     cos_wave, make_kinematic_ref, rotate_inv,
     dcos_wave, quaternion_to_rotation_6d
 )

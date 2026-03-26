@@ -7,9 +7,9 @@ import jax.numpy as jp
 import numpy as np
 import jax
 
-import mujoco
+from ml_collections import config_dict
 
-from mujoco_playground._src.locomotion.go2.TrotUtil import (
+from mujoco_playground._src.locomotion.go2.Util.TrotUtil import (
     cos_wave, dcos_wave, make_kinematic_ref,
     quaternion_to_matrix, matrix_to_rotation_6d,
     quaternion_to_rotation_6d,
@@ -17,106 +17,20 @@ from mujoco_playground._src.locomotion.go2.TrotUtil import (
 )
 
 from mujoco_playground._src.locomotion.go2 import go2_constants as consts
-from mujoco_playground._src.locomotion.go2.render_utils import render_trajectory
 
 # Sim
 import mujoco
 import mujoco.mjx as mjx
 from mujoco_playground._src import mjx_env
-
-try:
-    from mujoco_playground._src.mjx_env import make_data
-except ImportError:
-    from typing import Optional
-    import jax
-    import mujoco
-    from mujoco import mjx
-    def make_data(
-        model: mujoco.MjModel,
-        qpos: Optional[jax.Array] = None,
-        qvel: Optional[jax.Array] = None,
-        ctrl: Optional[jax.Array] = None,
-        act: Optional[jax.Array] = None,
-        mocap_pos: Optional[jax.Array] = None,
-        mocap_quat: Optional[jax.Array] = None,
-        impl: Optional[str] = None,
-        nconmax: Optional[int] = None,
-        njmax: Optional[int] = None,
-        device: Optional[jax.Device] = None, # type: ignore
-    ) -> mjx.Data:
-        """Initialize MJX Data."""
-        data = mjx.make_data(
-            model, impl=impl, nconmax=nconmax, njmax=njmax, device=device
-        )
-        if qpos is not None:
-            data = data.replace(qpos=qpos)
-        if qvel is not None:
-            data = data.replace(qvel=qvel)
-        if ctrl is not None:
-            data = data.replace(ctrl=ctrl)
-        if act is not None:
-            data = data.replace(act=act)
-        if mocap_pos is not None:
-            data = data.replace(mocap_pos=mocap_pos.reshape(model.nmocap, -1))
-        if mocap_quat is not None:
-            data = data.replace(mocap_quat=mocap_quat.reshape(model.nmocap, -1))
-        return data
-
+from mujoco_playground._src.mjx_env import make_data
 from mujoco_playground._src.locomotion.go2.base import Go2Env
+from mujoco_playground._src.locomotion.go2.configs import trot_config
+from mujoco_playground._src.locomotion.go2.mdp import commands as command_lib
+from mujoco_playground._src.locomotion.go2.mdp import event as event_lib
+from mujoco_playground._src.locomotion.go2.mdp import rewards as reward_lib
 
-# Supporting
-from ml_collections import config_dict
-from typing import Any, Dict
-
-
-# ----------------- default config -----------------
 def default_config() -> config_dict.ConfigDict:
-    # 注意：MjxEnv 要求 config 里必须包含 sim_dt 和 ctrl_dt
-    cfg = config_dict.ConfigDict()
-    cfg.Kp = 35.0          # PD 控制器的比例增益
-    cfg.Kd = 0.5           # PD 控制器的微分增益
-    cfg.sim_dt = 0.002          # 物理仿真步长（s）
-    cfg.ctrl_dt = 0.02          # 控制步长（s） => n_frames = ctrl_dt / sim_dt = 10
-    cfg.episode_length=240
-    # 环境超参
-    cfg.env = config_dict.ConfigDict()
-    cfg.env.termination_height = 0.1
-    cfg.env.step_k = consts.STEP_K            # 每条腿抬起/落下的子步数量
-    cfg.env.gait_scale = consts.GAIT_SCALE    # 运动学参考摆腿幅值（影响抬脚高度）
-    cfg.env.err_threshold = 0.1
-    cfg.env.action_scale = [0.3, 0.5, 0.5] * 4  # 每条腿3个关节，共4条腿
-    cfg.env.reset2ref = False
-    cfg.env.reference_state_init = True # RSI: Deepmimic
-    cfg.env.impratio = 100
-    cfg.env.iterations = 1
-
-    cfg.noise_config = config_dict.ConfigDict()
-    cfg.noise_config.level = 1.0
-    cfg.noise_config.scales = config_dict.ConfigDict()
-    cfg.noise_config.scales.joint_pos = 0.03
-    cfg.noise_config.scales.joint_vel = 1.5
-    cfg.noise_config.scales.gyro = 0.2
-    cfg.noise_config.scales.gravity = 0.05
-
-    # 扰动配置
-    cfg.disturbance = config_dict.ConfigDict()
-    cfg.disturbance.enable = True
-    cfg.disturbance.velocity_kick = [0.0, 1.0]
-    cfg.disturbance.kick_durations = [0.05, 0.2]
-    cfg.disturbance.kick_wait_times = [1.0, 3.0]
-    # 奖励权重
-    cfg.rewards = config_dict.ConfigDict()
-    cfg.rewards.scales = config_dict.ConfigDict()
-    cfg.rewards.scales.min_reference_tracking = -2.5 * 3e-3
-    cfg.rewards.scales.reference_tracking = -10.0
-    cfg.rewards.scales.feet_height = -10.0
-    cfg.rewards.scales.base_tracking = -1.0
-    # 其他
-    cfg.impl = "jax"
-    cfg.nconmax = 4 * 8192
-    cfg.njmax = 40
-    return cfg
-
+    return trot_config.default_config()
 
 # ----------------- Env -----------------
 class TrotGo2(Go2Env):
@@ -127,12 +41,8 @@ class TrotGo2(Go2Env):
 
     def __init__(self,
                  task: str = None, 
-                 config: config_dict.ConfigDict = default_config(), 
+                 config: config_dict.ConfigDict = trot_config.default_config(), 
                  config_overrides: Optional[Dict[str, Union[str, int, list[Any]]]] = None):
-        # CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-        # default_xml = os.path.normpath(
-        #     os.path.join(CURRENT_DIR, "xmls", "scene_mjx_collision_free.xml")
-        # )
         default_xml = consts.MJX_XML_SENSOR_PATH.as_posix()
         super().__init__(
             xml_path=default_xml,
@@ -182,6 +92,8 @@ class TrotGo2(Go2Env):
         self.reset2ref = self._config.env.reset2ref
         self.reference_state_init = self._config.env.reference_state_init
 
+        self._init_active_rewards(reward_lib)
+
     # -------- Envs API: reset/step ----------
     def reset(self, rng: jax.Array) -> mjx_env.State:
         # RSI
@@ -223,29 +135,6 @@ class TrotGo2(Go2Env):
         )
         data = mjx.forward(self.mjx_model, data)
 
-        rng, key1, key2, key3 = jax.random.split(rng, 4)
-        time_until_next_disturbance = jax.random.uniform(
-            key1,
-            minval=self._config.disturbance.kick_wait_times[0],
-            maxval=self._config.disturbance.kick_wait_times[1],
-        )
-        steps_until_next_disturbance = jp.round(time_until_next_disturbance / self.dt).astype(
-            jp.int32
-        )
-        disturbance_duration_seconds = jax.random.uniform(
-            key2,
-            minval=self._config.disturbance.kick_durations[0],
-            maxval=self._config.disturbance.kick_durations[1],
-        )
-        disturbance_duration_steps = jp.round(disturbance_duration_seconds / self.dt).astype(
-            jp.int32
-        )
-        disturbance_mag = jax.random.uniform(
-            key3,
-            minval=self._config.disturbance.velocity_kick[0],
-            maxval=self._config.disturbance.velocity_kick[1],
-        )
-
         # state_info 保持和原版一致
         state_info = {
             'rng': rng,
@@ -259,17 +148,15 @@ class TrotGo2(Go2Env):
             'last_action': jp.zeros(self.mjx_model.nu),  # 12 通道动作
             'kinematic_ref': qpos,
             # Unified obs fields (match JoystickGo2 full obs layout)
-            'command': jp.zeros(3),
             'anchor_action': jp.zeros(self.mjx_model.nu),
-
-            "steps_until_next_disturbance": steps_until_next_disturbance,
-            "disturbance_duration_seconds": disturbance_duration_seconds,
-            "disturbance_duration": disturbance_duration_steps,
-            "steps_since_last_disturbance": 0,
-            "disturbance_steps": 0,
-            "disturbance_dir": jp.zeros(3),
-            "disturbance_mag": disturbance_mag,
         }
+        state_info = command_lib.init_command_state(state_info)
+        state_info = event_lib.init_disturbance(
+            state_info,
+            disturbance_cfg=self._config.disturbance,
+            dt=self.dt,
+            prefix="disturbance",
+        )
 
         # 生成 obs
         obs = self._get_obs(data, state_info)
@@ -287,7 +174,15 @@ class TrotGo2(Go2Env):
     def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
         # add disturbance
         if self._config.disturbance.enable:
-            state = self._maybe_apply_disturbance(state)
+            state = event_lib.maybe_apply_disturbance(
+                state,
+                disturbance_cfg=self._config.disturbance,
+                dt=self.dt,
+                base_mass=self.base_mass,
+                nbody=self.mjx_model.nbody,
+                base_id=self.base_id,
+                prefix="disturbance",
+            )
     
         action = jp.clip(action, -1, 1)
         ctrl = self.action_loc + (action * self.action_scale)
@@ -316,16 +211,13 @@ class TrotGo2(Go2Env):
         done = jp.where(jp.dot(base_z_axis_world, up) < 0.0, 1.0, done)
 
         # 奖励
-        reward_tuple = dict(
-            reference_tracking=self._reward_reference_tracking(data, ref_data) 
-            * self.reward_config.scales.reference_tracking,
-            min_reference_tracking=self._reward_min_reference_tracking(ref_qpos, ref_qvel, data)
-            * self.reward_config.scales.min_reference_tracking,
-            feet_height=self._reward_feet_height(data.geom_xpos[self.feet_inds][:, 2], ref_data.geom_xpos[self.feet_inds][:, 2])
-            * self.reward_config.scales.feet_height,
-            base_tracking=self._reward_base_tracking(data, ref_data)
-            * self.reward_config.scales.base_tracking,
-        )
+        reward_kwargs = {
+            'ref_data': ref_data,
+            'ref_qpos': ref_qpos,
+            'ref_qvel': ref_qvel,
+            'feet_inds': self.feet_inds,
+            }
+        reward_tuple = self._get_reward(data, ctrl, state.info, reward_kwargs, done)
 
         state.info["last_action"] = ctrl
 
@@ -385,194 +277,23 @@ class TrotGo2(Go2Env):
 
         return frames
 
-    def _apply_obs_noise(self, info: dict[str, Any], x: jax.Array, scale: float):
-        info["rng"], noise_rng = jax.random.split(info["rng"])
-        noise = (
-            (2 * jax.random.uniform(noise_rng, shape=x.shape) - 1)
-            * self._config.noise_config.level
-            * scale
-        )
-        return x + noise
-
     # -------- obs & reward helpers ----------
+    def _get_obs_context(self) -> Dict[str, Any]:
+        return {
+            "default_ap_pose": self._default_ap_pose,
+            "l_cycle": self.l_cycle,
+            "kin_ref_qpos": self.kinematic_ref_qpos,
+        }
+
     def _get_obs(self, data, state_info: Dict[str, Any]):
-        # Unified full observation for anchor training, aligned with JoystickGo2.
-        # Order (69 dims): w_local(3), g_local(3), command(3), angles(12),
-        # joint_vels(12), last_action(12), kin_ref(12), anchor_action(12).
-        q = data.xquat[1]
-        w_local = rotate_inv(data.cvel[1, :3], q)
-        w_local = self._apply_obs_noise(
-            state_info, w_local, self._config.noise_config.scales.gyro
-        ) * consts.OBS_W_LOCAL_SCALE
-        g_world = jp.array([0.0, 0.0, -1.0])
-        g_local = rotate_inv(g_world, q)
-        g_local = self._apply_obs_noise(
-            state_info, g_local, self._config.noise_config.scales.gravity
-        )
-        angles = data.qpos[7:19]
-        angles = self._apply_obs_noise(
-            state_info, angles, self._config.noise_config.scales.joint_pos
-        )
-        joint_vels = data.qvel[6:]
-        joint_vels = self._apply_obs_noise(
-            state_info, joint_vels, self._config.noise_config.scales.joint_vel
-        ) * consts.OBS_JOINT_VELS_SCALE
-        last_action = state_info["last_action"]
-        step_idx = jp.array(state_info["step"] % self.l_cycle, int)
-        kin_ref = self.kinematic_ref_qpos[step_idx][7:]
-        command = state_info["command"]
-        anchor_action = state_info["anchor_action"]
+        return self._build_obs(data, state_info, self._config.obs.policy_terms)
 
-        obs_list = [
-            w_local,
-            g_local,
-            command,
-            angles - jp.array(self._default_ap_pose),
-            joint_vels,
-            last_action,
-            kin_ref,
-            anchor_action,
-        ]
-        obs = jp.clip(jp.concatenate(obs_list), -100.0, 100.0)
-        return {"state": obs}
-
-    def _reward_reference_tracking(self, data, ref_data):
-        f = lambda a, b: ((a - b) ** 2).sum(-1).mean()
-        mse_pos = f(data.xpos[1:], ref_data.xpos[1:])
-        mse_rot = f(quaternion_to_rotation_6d(data.xquat[1:]), quaternion_to_rotation_6d(ref_data.xquat[1:]))
-        vel = data.cvel[1:, 3:]
-        ang = data.cvel[1:, :3]
-        ref_vel = ref_data.cvel[1:, 3:]
-        ref_ang = ref_data.cvel[1:, :3]
-        mse_vel = f(vel, ref_vel)
-        mse_ang = f(ang, ref_ang)
-        return mse_pos + 0.1 * mse_rot + 0.01 * mse_vel + 0.001 * mse_ang
-
-    def _reward_min_reference_tracking(self, ref_qpos, ref_qvel, data):
-        pos = jp.concatenate([data.qpos[:3], data.qpos[7:]])
-        pos_targ = jp.concatenate([ref_qpos[:3], ref_qpos[7:]])
-        pos_err = jp.linalg.norm(pos_targ - pos)
-        vel_err = jp.linalg.norm(data.qvel - ref_qvel)
-        return pos_err + vel_err
-
-    def _reward_feet_height(self, feet_z, feet_z_ref):
-        return jp.sum(jp.abs(feet_z - feet_z_ref))
-    
-    def _reward_base_tracking(self, data, ref_data):
-        pos_err = jp.linalg.norm(data.xpos[1] - ref_data.xpos[1])
-        q = data.xquat[1]
-        q_ref = ref_data.xquat[1]
-        dot = jp.abs(jp.dot(q, q_ref))  # q and -q are same rotation
-        dot = jp.clip(dot, -1.0, 1.0)
-        rot_err = jp.arccos(2 * dot**2 - 1)
-        vel_err = jp.linalg.norm(data.cvel[1] - ref_data.cvel[1])
-        return pos_err + 0.5 * rot_err + 0.1 * vel_err
-    
-    # ----------------- Disturbance -----------------
-    def _maybe_apply_disturbance(self, state: mjx_env.State) -> mjx_env.State:
-        def gen_dir(rng: jax.Array) -> jax.Array:
-            angle = jax.random.uniform(rng, minval=0.0, maxval=jp.pi * 2)
-            return jp.array([jp.cos(angle), jp.sin(angle), 0.0])
-
-        def apply_disturbance(state: mjx_env.State) -> mjx_env.State:
-            t = state.info["disturbance_steps"] * self.dt
-            u_t = 0.5 * jp.sin(jp.pi * t / state.info["disturbance_duration_seconds"])
-            force = (
-                u_t
-                * self.base_mass
-                * state.info["disturbance_mag"]
-                / state.info["disturbance_duration_seconds"]
-            )
-            xfrc_applied = jp.zeros((self.mjx_model.nbody, 6))
-            xfrc_applied = xfrc_applied.at[self.base_id, :3].set(
-                force * state.info["disturbance_dir"]
-            )
-            state.info["rng"], key_wait, key_dur, key_mag = jax.random.split(
-                state.info["rng"], 4
-            )
-            done_kick = state.info["disturbance_steps"] >= state.info["disturbance_duration"]
-            time_until_next_disturbance = jax.random.uniform(
-                key_wait,
-                minval=self._config.disturbance.kick_wait_times[0],
-                maxval=self._config.disturbance.kick_wait_times[1],
-            )
-            steps_until_next_disturbance = jp.round(time_until_next_disturbance / self.dt).astype(
-                jp.int32
-            )
-            disturbance_duration_seconds = jax.random.uniform(
-                key_dur,
-                minval=self._config.disturbance.kick_durations[0],
-                maxval=self._config.disturbance.kick_durations[1],
-            )
-            disturbance_duration_steps = jp.round(disturbance_duration_seconds / self.dt).astype(
-                jp.int32
-            )
-            disturbance_mag = jax.random.uniform(
-                key_mag,
-                minval=self._config.disturbance.velocity_kick[0],
-                maxval=self._config.disturbance.velocity_kick[1],
-            )
-            data = state.data.replace(xfrc_applied=xfrc_applied)
-            state = state.replace(data=data)
-            state.info["steps_since_last_disturbance"] = jp.where(
-                done_kick,
-                0,
-                state.info["steps_since_last_disturbance"],
-            )
-            state.info["steps_until_next_disturbance"] = jp.where(
-                done_kick,
-                steps_until_next_disturbance,
-                state.info["steps_until_next_disturbance"],
-            )
-            state.info["disturbance_duration_seconds"] = jp.where(
-                done_kick,
-                disturbance_duration_seconds,
-                state.info["disturbance_duration_seconds"],
-            )
-            state.info["disturbance_duration"] = jp.where(
-                done_kick,
-                disturbance_duration_steps,
-                state.info["disturbance_duration"],
-            )
-            state.info["disturbance_mag"] = jp.where(
-                done_kick,
-                disturbance_mag,
-                state.info["disturbance_mag"],
-            )
-            state.info["disturbance_steps"] += 1
-            return state
-
-        def wait(state: mjx_env.State) -> mjx_env.State:
-            state.info["rng"], rng = jax.random.split(state.info["rng"])
-            state.info["steps_since_last_disturbance"] += 1
-            xfrc_applied = jp.zeros((self.mjx_model.nbody, 6))
-            data = state.data.replace(xfrc_applied=xfrc_applied)
-            state.info["disturbance_steps"] = jp.where(
-                state.info["steps_since_last_disturbance"]
-                >= state.info["steps_until_next_disturbance"],
-                0,
-                state.info["disturbance_steps"],
-            )
-            state.info["disturbance_dir"] = jp.where(
-                state.info["steps_since_last_disturbance"]
-                >= state.info["steps_until_next_disturbance"],
-                gen_dir(rng),
-                state.info["disturbance_dir"],
-            )
-            return state.replace(data=data)
-
-        return jax.lax.cond(
-            state.info["steps_since_last_disturbance"]
-            >= state.info["steps_until_next_disturbance"],
-            apply_disturbance,
-            wait,
-            state,
-        )
-
-
-# # ----------------- 注册到 playground -----------------
-# locomotion.register_environment(
-#     'TrotAnymal',   # 环境名字
-#     TrotAnymal,     # 环境类
-#     default_config      # 默认配置函数
-# )
+    def _get_reward_context(
+        self,
+        data: mjx.Data,
+        action: jax.Array,
+        info: dict[str, Any],
+        extra_args: dict[str, Any],
+    ) -> dict[str, Any]:
+        del data, action, info
+        return dict(extra_args)

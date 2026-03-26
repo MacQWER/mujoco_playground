@@ -45,7 +45,7 @@ from mujoco_playground._src.locomotion.go2 import TrotGo2 as trot_go2
 from mujoco_playground._src.locomotion.go2 import joystick as go2_joystick
 from mujoco_playground._src.locomotion.go2 import JoystickGo2 as go2_joystick2
 from mujoco_playground._src.locomotion.go2 import smooth_joystick as go2_smooth_joystick
-from mujoco_playground._src.locomotion.go2 import randomize as go2_randomize
+from mujoco_playground._src.locomotion.go2.mdp import randomize as go2_randomize
 
 
 _envs = {
