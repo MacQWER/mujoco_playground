@@ -25,8 +25,6 @@ from mujoco_playground._src import mjx_env
 from mujoco_playground._src.mjx_env import make_data
 from mujoco_playground._src.locomotion.go2.base import Go2Env
 from mujoco_playground._src.locomotion.go2.configs import trot_config
-from mujoco_playground._src.locomotion.go2.mdp import commands as command_lib
-from mujoco_playground._src.locomotion.go2.mdp import event as event_lib
 from mujoco_playground._src.locomotion.go2.mdp import rewards as reward_lib
 
 def default_config() -> config_dict.ConfigDict:
@@ -150,41 +148,39 @@ class TrotGo2(Go2Env):
             # Unified obs fields (match JoystickGo2 full obs layout)
             'anchor_action': jp.zeros(self.mjx_model.nu),
         }
-        state_info = command_lib.init_command_state(state_info)
-        state_info = event_lib.init_disturbance(
+        state_info = self.command_manager.init_state(state_info)
+        state_info = self.event_manager.init_state(
             state_info,
             disturbance_cfg=self._config.disturbance,
             dt=self.dt,
             prefix="disturbance",
         )
+        state_info = self._sync_info(state_info)
 
         # 生成 obs
         obs = self._get_obs(data, state_info)
 
         # 初始化 reward 和 metrics
-        reward, done = jp.zeros(2)
         metrics = {}
         for k in state_info['reward_tuple']:
             metrics[k] = state_info['reward_tuple'][k]
 
         # 返回 mjx_env.State
-        state = mjx_env.State(data, obs, reward, done, metrics, state_info)
+        state = self._init_state(data, obs, state_info, metrics=metrics)
         return jax.lax.stop_gradient(state)
 
     def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
         # add disturbance
-        if self._config.disturbance.enable:
-            state = event_lib.maybe_apply_disturbance(
-                state,
-                disturbance_cfg=self._config.disturbance,
-                dt=self.dt,
-                base_mass=self.base_mass,
-                nbody=self.mjx_model.nbody,
-                base_id=self.base_id,
-                prefix="disturbance",
-            )
+        state = self._run_event_pipeline(
+            state,
+            enabled=self._config.disturbance.enable,
+            disturbance_cfg=self._config.disturbance,
+            base_mass=self.base_mass,
+            base_id=self.base_id,
+            prefix="disturbance",
+        )
     
-        action = jp.clip(action, -1, 1)
+        action = self._clip_action(action, -1.0, 1.0)
         ctrl = self.action_loc + (action * self.action_scale)
 
         data = mjx_env.step(
@@ -204,7 +200,7 @@ class TrotGo2(Go2Env):
 
         # 结束条件
         base_z = data.xpos[self.base_id, 2]
-        done = jp.where(base_z < self.termination_height, 1.0, 0.0)
+        done = self.termination_manager.build_done(jp.where(base_z < self.termination_height, 1.0, 0.0))
         R_base = quaternion_to_matrix(data.xquat[1])
         up = jp.array([0.0, 0.0, 1.0])
         base_z_axis_world = R_base @ up
@@ -227,9 +223,8 @@ class TrotGo2(Go2Env):
 
             reward_tuple['reference_tracking'] *= jax.numpy.where(to_ref, 10.0, 1.0)
             reward_tuple['base_tracking'] *= jax.numpy.where(to_ref, 10.0, 1.0)
-            reward = sum(reward_tuple.values())
-            for k in reward_tuple.keys():
-                state.metrics[k] = reward_tuple[k]
+            reward = self._sum_reward_dict(reward_tuple)
+            self._update_metrics(state.metrics, reward_tuple)
             state.info["reward_tuple"] = reward_tuple
 
             def safe_select(a, b):
@@ -239,17 +234,30 @@ class TrotGo2(Go2Env):
             obs = self._get_obs(data_blend, state.info)
             state.info["step"] = state.info["step"] + 1.0
 
-            return state.replace(data=data_blend, obs=obs, reward=reward, done=done)
+            return self._finalize_step(
+                state,
+                data=data_blend,
+                obs=obs,
+                reward=reward,
+                done=done,
+                info=state.info,
+            )
         
         else:
-            reward = sum(reward_tuple.values())
+            reward = self._sum_reward_dict(reward_tuple)
             state.info["reward_tuple"] = reward_tuple
-            for k in reward_tuple.keys():
-                state.metrics[k] = reward_tuple[k]
+            self._update_metrics(state.metrics, reward_tuple)
 
             state.info["step"] = state.info["step"] + 1.0
 
-            return state.replace(data=data, obs=obs, reward=reward, done=done)
+            return self._finalize_step(
+                state,
+                data=data,
+                obs=obs,
+                reward=reward,
+                done=done,
+                info=state.info,
+            )
     
     # -------- Render reference motion (optimized) ----------
     def play_ref_motion(self, render_every: int = 2, seed: int = 0, save_path: str = None):

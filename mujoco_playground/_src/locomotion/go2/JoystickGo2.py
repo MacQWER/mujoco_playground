@@ -17,8 +17,6 @@ from mujoco_playground._src.locomotion.go2.Util.TrotUtil import (
 )
 
 from mujoco_playground._src.locomotion.go2.configs import joystick_config
-from mujoco_playground._src.locomotion.go2.mdp import commands as command_lib
-from mujoco_playground._src.locomotion.go2.mdp import event as event_lib
 from mujoco_playground._src.locomotion.go2.mdp import rewards as reward_lib
 from mujoco_playground._src.locomotion.go2.Util import JoystickUtil as joystick_utils
 
@@ -178,7 +176,7 @@ class JoystickGo2(Go2Env):
         data = data.replace(qpos=qpos.at[2].set(qpos[2] - pen))
         data = mjx.forward(self.mjx_model, data)
 
-        cmd = command_lib.sample_command(key_cmd, cmd_a=self._cmd_a, cmd_b=self._cmd_b)
+        cmd = self.command_manager.sample(key_cmd, cmd_a=self._cmd_a, cmd_b=self._cmd_b)
 
         hip_pos = data.xpos[self.hip_inds][:, :2]
         feet_pos = data.geom_xpos[self.feet_inds][:, :2]
@@ -210,17 +208,18 @@ class JoystickGo2(Go2Env):
             'anchor_action': jp.zeros(12),
             'reward_tuple': {k: 0.0 for k in self._config.rewards.scales.keys()}
         }
-        state_info = command_lib.init_command_state(
+        state_info = self.command_manager.init_state(
             state_info,
             command=cmd,
             steps_until_next_cmd=jp.array(100, dtype=jp.int32),
         )
-        state_info = event_lib.init_disturbance(
+        state_info = self.event_manager.init_state(
             state_info,
             disturbance_cfg=self._config.disturbance,
             dt=self.dt,
             prefix="pert",
         )
+        state_info = self._sync_info(state_info)
         self._update_foot_cycloid_ref(state_info)
 
         # Anchor Inference
@@ -237,29 +236,25 @@ class JoystickGo2(Go2Env):
 
         residual_obs = self._get_residual_obs(data, state_info)
         
-        reward, done = jp.zeros(2)
         metrics = state_info['reward_tuple'].copy()
-        
-        return mjx_env.State(data, residual_obs, reward, done, metrics, state_info)
+        return self._init_state(data, residual_obs, state_info, metrics=metrics)
 
     # -------- Step --------
     def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
         # 0. Add disturbance.
-        if self._config.disturbance.enable:
-            state = event_lib.maybe_apply_disturbance(
-                state,
-                disturbance_cfg=self._config.disturbance,
-                dt=self.dt,
-                base_mass=self.base_mass,
-                nbody=self.mjx_model.nbody,
-                base_id=self.base_id,
-                prefix="pert",
-            )
+        state = self._run_event_pipeline(
+            state,
+            enabled=self._config.disturbance.enable,
+            disturbance_cfg=self._config.disturbance,
+            base_mass=self.base_mass,
+            base_id=self.base_id,
+            prefix="pert",
+        )
 
         info = state.info
 
         # 1. Mix anchor and residual actions into the applied control.
-        action = jp.clip(action, -1.0, 1.0)
+        action = self._clip_action(action, -1.0, 1.0)
         anchor_act = info['anchor_action']
         mixed_action = (
             anchor_act * self.anchor_action_scale
@@ -288,7 +283,7 @@ class JoystickGo2(Go2Env):
         up_z = self.get_upvector(data)[-1]
         tilt_threshold = jp.cos(jp.deg2rad(45.0))
         fall_termination = up_z < tilt_threshold
-        done = jp.where(fall_termination, 1.0, 0.0)
+        done = self.termination_manager.build_done(jp.where(fall_termination, 1.0, 0.0))
         soft_done = jax.nn.sigmoid((tilt_threshold - up_z) * 100.0)
 
         reward_kwargs = {
@@ -297,7 +292,7 @@ class JoystickGo2(Go2Env):
             'soft_done': soft_done,
         }
         reward_dict = self._get_reward(data, ctrl, info, reward_kwargs, done)
-        reward = sum(reward_dict.values()) * self.dt
+        reward = self._sum_reward_dict(reward_dict, self.dt)
 
         # 6. Commit post-step history for the next observation / next action.
         info["feet_air_time"] = feet_air_time * (1.0 - contact)
@@ -306,7 +301,7 @@ class JoystickGo2(Go2Env):
         info["last_residual"] = action
         info["last_action"] = ctrl
 
-        info = command_lib.update_command(
+        info = self.command_manager.update(
             info,
             dt=self.dt,
             cmd_a=self._cmd_a,
@@ -323,14 +318,20 @@ class JoystickGo2(Go2Env):
             next_anchor_act = jax.lax.stop_gradient(next_anchor_act)
         info['anchor_action'] = next_anchor_act
 
-        for k, v in reward_dict.items():
-            state.metrics[k] = v
+        self._update_metrics(state.metrics, reward_dict)
         info['reward_tuple'] = reward_dict
 
         # 7. Next observation.
         residual_obs = self._get_residual_obs(data, info)
 
-        return state.replace(data=data, obs=residual_obs, reward=reward, done=done)
+        return self._finalize_step(
+            state,
+            data=data,
+            obs=residual_obs,
+            reward=reward,
+            done=done,
+            info=info,
+        )
 
     # -------- Observation Generators --------
 

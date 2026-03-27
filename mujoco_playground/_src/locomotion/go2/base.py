@@ -10,6 +10,7 @@ from mujoco import mjx
 from mujoco_playground._src import mjx_env
 
 from mujoco_playground._src.locomotion.go2 import go2_constants as consts
+from mujoco_playground._src.locomotion.go2 import managers as manager_lib
 from mujoco_playground._src.locomotion.go2.mdp import observations as observation_lib
 from mujoco_playground._src.locomotion.go2.Util.render_utils import render_trajectory
 
@@ -40,6 +41,16 @@ class Go2Env(mjx_env.MjxEnv):
         self._mjx_model = mjx.put_model(self._mj_model, impl=self._config.impl)
 
         self._imu_site_id = self._mj_model.site("imu").id
+        self.observation_manager = manager_lib.ObservationManager(
+            obs_module=observation_lib,
+            context_fn=self._get_obs_context,
+            noise_fn=self._apply_obs_noise,
+        )
+        self.action_manager = manager_lib.ActionManager()
+        self.command_manager = manager_lib.CommandManager()
+        self.event_manager = manager_lib.EventManager()
+        self.termination_manager = manager_lib.TerminationManager()
+        self.reward_manager = None
 
     @property
     def xml_path(self) -> str:
@@ -119,15 +130,7 @@ class Go2Env(mjx_env.MjxEnv):
         info: Dict[str, Any],
         terms: Sequence[tuple[str, Optional[str], float]],
     ) -> Dict[str, jax.Array]:
-        obs_kwargs = self._get_obs_context()
-        obs_terms = []
-        for term_name, noise_name, scale in terms:
-            term_fn = getattr(observation_lib, term_name)
-            value = term_fn(data, info, **obs_kwargs)
-            value = self._apply_obs_noise(info, value, noise_name)
-            obs_terms.append(value * scale)
-        obs = jp.clip(jp.concatenate(obs_terms), -100.0, 100.0)
-        return {"state": obs}
+        return self.observation_manager.build(data, info, terms)
 
     def _get_reward_context(
         self,
@@ -140,10 +143,15 @@ class Go2Env(mjx_env.MjxEnv):
         return dict(extra_args)
 
     def _init_active_rewards(self, reward_lib: Any) -> None:
-        self.active_rewards = {}
-        for name, scale in self._config.rewards.scales.items():
-            if scale != 0.0:
-                self.active_rewards[name] = (scale, getattr(reward_lib, name))
+        self.reward_manager = manager_lib.RewardManager(
+            reward_module=reward_lib,
+            cfg=self._config,
+            context_fn=self._get_reward_context,
+        )
+        self.active_rewards = {
+            name: (scale, func)
+            for name, scale, func in self.reward_manager.active_terms
+        }
 
     def _get_reward(
         self,
@@ -153,13 +161,77 @@ class Go2Env(mjx_env.MjxEnv):
         extra_args: Dict[str, Any],
         done: jax.Array,
     ) -> Dict[str, jax.Array]:
-        del done
-        reward_kwargs = self._get_reward_context(data, action, info, extra_args)
-        reward_dict = {}
-        for name, (scale, func) in self.active_rewards.items():
-            reward_value = func(data, info, cfg=self._config, **reward_kwargs)
-            reward_dict[name] = reward_value * scale
-        return reward_dict
+        return self.reward_manager.compute(data, action, info, extra_args, done)
+
+    def _sync_info(self, info: Dict[str, Any]) -> Dict[str, Any]:
+        return manager_lib.sync_manager_state(info)
+
+    def _init_state(
+        self,
+        data: mjx.Data,
+        obs: Dict[str, jax.Array],
+        info: Dict[str, Any],
+        reward: Optional[jax.Array] = None,
+        done: Optional[jax.Array] = None,
+        metrics: Optional[Dict[str, Any]] = None,
+    ) -> mjx_env.State:
+        info = self._sync_info(info)
+        if reward is None or done is None:
+            reward, done = jp.zeros(2)
+        if metrics is None:
+            reward_tuple = info.get("reward_tuple", {})
+            metrics = dict(reward_tuple)
+        return mjx_env.State(data, obs, reward, done, metrics, info)
+
+    def _run_event_pipeline(
+        self,
+        state: mjx_env.State,
+        *,
+        enabled: bool,
+        disturbance_cfg: Any,
+        base_mass: float,
+        base_id: int,
+        prefix: str,
+    ) -> mjx_env.State:
+        if not enabled:
+            return state
+        return self.event_manager.maybe_apply(
+            state,
+            disturbance_cfg=disturbance_cfg,
+            dt=self.dt,
+            base_mass=base_mass,
+            nbody=self.mjx_model.nbody,
+            base_id=base_id,
+            prefix=prefix,
+        )
+
+    def _clip_action(self, action: jax.Array, low: float = -1.0, high: float = 1.0) -> jax.Array:
+        return self.action_manager.clip(action, low=low, high=high)
+
+    def _sum_reward_dict(
+        self, reward_dict: Dict[str, jax.Array], scale: float = 1.0
+    ) -> jax.Array:
+        return sum(reward_dict.values()) * scale
+
+    def _update_metrics(
+        self, metrics: Dict[str, Any], reward_dict: Dict[str, jax.Array]
+    ) -> Dict[str, Any]:
+        for k, v in reward_dict.items():
+            metrics[k] = v
+        return metrics
+
+    def _finalize_step(
+        self,
+        state: mjx_env.State,
+        *,
+        data: mjx.Data,
+        obs: Dict[str, jax.Array],
+        reward: jax.Array,
+        done: jax.Array,
+        info: Dict[str, Any],
+    ) -> mjx_env.State:
+        info = self._sync_info(info)
+        return state.replace(data=data, obs=obs, reward=reward, done=done, info=info)
 
     def _render_trajectory(
         self,

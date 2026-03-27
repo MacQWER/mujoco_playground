@@ -22,22 +22,32 @@ def default_config() -> config_dict.ConfigDict:
     
     # 格式: (使用的函数名, 噪声配置名, 缩放系数)
     cfg.obs.policy_terms = [
-        ("base_angular_velocity", "gyro",      consts.OBS_W_LOCAL_SCALE),
-        ("projected_gravity",     "gravity",   1.0),
-        ("zero_command",          None,        1.0),  # Trot 无指令
-        ("joint_positions",       "joint_pos", 1.0),
-        ("joint_velocities",      "joint_vel", consts.OBS_JOINT_VELS_SCALE),
-        ("last_action",           None,        1.0),
-        ("kinematic_reference",   None,        1.0),
-        ("zero_anchor_action",    None,        1.0),  # Trot 无 Anchor
+        config_blocks.make_obs_term("base_angular_velocity", "gyro", consts.OBS_W_LOCAL_SCALE),
+        config_blocks.make_obs_term("projected_gravity", "gravity", 1.0),
+        config_blocks.make_obs_term("zero_command", None, 1.0),  # Trot 无指令
+        config_blocks.make_obs_term("joint_positions", "joint_pos", 1.0),
+        config_blocks.make_obs_term("joint_velocities", "joint_vel", consts.OBS_JOINT_VELS_SCALE),
+        config_blocks.make_obs_term("last_action", None, 1.0),
+        config_blocks.make_obs_term("kinematic_reference", None, 1.0),
+        config_blocks.make_obs_term("zero_anchor_action", None, 1.0),  # Trot 无 Anchor
     ]
     
     # reward config
     cfg.rewards = config_blocks.get_base_rewards_config()
-    cfg.rewards.scales.min_reference_tracking = -2.5 * 3e-3
-    cfg.rewards.scales.reference_tracking = -10.0
-    cfg.rewards.scales.feet_height = -10.0
-    cfg.rewards.scales.base_tracking = -1.0
+    cfg.rewards.terms.min_reference_tracking = config_blocks.make_reward_term(
+        "min_reference_tracking", -2.5 * 3e-3
+    )
+    cfg.rewards.terms.reference_tracking = config_blocks.make_reward_term(
+        "reference_tracking", -10.0
+    )
+    cfg.rewards.terms.feet_height = config_blocks.make_reward_term(
+        "feet_height", -10.0
+    )
+    cfg.rewards.terms.base_tracking = config_blocks.make_reward_term(
+        "base_tracking", -1.0
+    )
+    for name, term in cfg.rewards.terms.items():
+        cfg.rewards.scales[name] = term.scale
 
     # disturbance config
     cfg.disturbance = config_blocks.get_disturbance_config()

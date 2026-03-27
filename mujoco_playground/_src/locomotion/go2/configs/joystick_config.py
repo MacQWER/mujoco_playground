@@ -21,55 +21,50 @@ def default_config() -> config_dict.ConfigDict:
     cfg.obs = config_dict.ConfigDict()
     # 1. Residual Policy
     cfg.obs.policy_terms = [
-        ("base_angular_velocity", "gyro",      consts.OBS_W_LOCAL_SCALE),
-        ("projected_gravity",     "gravity",   1.0),
-        ("command",               None,        1.0),  # 看真实指令
-        ("joint_positions",       "joint_pos", 1.0),
-        ("joint_velocities",      "joint_vel", consts.OBS_JOINT_VELS_SCALE),
-        ("last_action",           None,        1.0),
-        ("kinematic_reference",   None,        1.0),
-        ("anchor_action",         None,        1.0),  # 看前置动作
+        config_blocks.make_obs_term("base_angular_velocity", "gyro", consts.OBS_W_LOCAL_SCALE),
+        config_blocks.make_obs_term("projected_gravity", "gravity", 1.0),
+        config_blocks.make_obs_term("command", None, 1.0),  # 看真实指令
+        config_blocks.make_obs_term("joint_positions", "joint_pos", 1.0),
+        config_blocks.make_obs_term("joint_velocities", "joint_vel", consts.OBS_JOINT_VELS_SCALE),
+        config_blocks.make_obs_term("last_action", None, 1.0),
+        config_blocks.make_obs_term("kinematic_reference", None, 1.0),
+        config_blocks.make_obs_term("anchor_action", None, 1.0),  # 看前置动作
     ]
     
     # 2. Anchor Policy 
     cfg.obs.anchor_terms = [
-        ("base_angular_velocity", "gyro",      consts.OBS_W_LOCAL_SCALE),
-        ("projected_gravity",     "gravity",   1.0),
-        ("zero_command",          None,        1.0),  # 屏蔽指令
-        ("joint_positions",       "joint_pos", 1.0),
-        ("joint_velocities",      "joint_vel", consts.OBS_JOINT_VELS_SCALE),
-        ("last_action",           None,        1.0),
-        ("kinematic_reference",   None,        1.0),
-        ("zero_anchor_action",    None,        1.0),  # 屏蔽动作
+        config_blocks.make_obs_term("base_angular_velocity", "gyro", consts.OBS_W_LOCAL_SCALE),
+        config_blocks.make_obs_term("projected_gravity", "gravity", 1.0),
+        config_blocks.make_obs_term("zero_command", None, 1.0),  # 屏蔽指令
+        config_blocks.make_obs_term("joint_positions", "joint_pos", 1.0),
+        config_blocks.make_obs_term("joint_velocities", "joint_vel", consts.OBS_JOINT_VELS_SCALE),
+        config_blocks.make_obs_term("last_action", None, 1.0),
+        config_blocks.make_obs_term("kinematic_reference", None, 1.0),
+        config_blocks.make_obs_term("zero_anchor_action", None, 1.0),  # 屏蔽动作
     ]
     
     # reward config
     cfg.rewards = config_blocks.get_base_rewards_config()
-    # Tracking
-    cfg.rewards.scales.tracking_lin_vel = 3.0
-    cfg.rewards.scales.tracking_ang_vel = 2.0
-    cfg.rewards.scales.base_height_tracking = 0.5
-    cfg.rewards.scales.joint_pose_tracking = 0.1
-    cfg.rewards.scales.joint_vel_tracking = 0.01
-    cfg.rewards.scales.gait_phase_tracking = 1.0
-    
-    # Anchor Heuristics
-    cfg.rewards.scales.feet_traj = -5.0
-    
-    # Smoothness & Physics
-    cfg.rewards.scales.lin_vel_z = -1.0
-    cfg.rewards.scales.ang_vel_xy = -0.1
-    cfg.rewards.scales.orientation = -10.0
-    cfg.rewards.scales.torques = -0.0002
-    cfg.rewards.scales.action_rate = -0.01
-    cfg.rewards.scales.energy = -0.001
-    
-    # Feet Interaction
-    cfg.rewards.scales.feet_slip = -1.0
-    cfg.rewards.scales.feet_air_time = 5.0
-    cfg.rewards.scales.dof_pos_limits = -1.0
-    cfg.rewards.scales.stand_still = -0.5
-    cfg.rewards.scales.termination = -10.0  
+    cfg.rewards.terms.tracking_lin_vel = config_blocks.make_reward_term("tracking_lin_vel", 3.0)
+    cfg.rewards.terms.tracking_ang_vel = config_blocks.make_reward_term("tracking_ang_vel", 2.0)
+    cfg.rewards.terms.base_height_tracking = config_blocks.make_reward_term("base_height_tracking", 0.5)
+    cfg.rewards.terms.joint_pose_tracking = config_blocks.make_reward_term("joint_pose_tracking", 0.1)
+    cfg.rewards.terms.joint_vel_tracking = config_blocks.make_reward_term("joint_vel_tracking", 0.01)
+    cfg.rewards.terms.gait_phase_tracking = config_blocks.make_reward_term("gait_phase_tracking", 1.0)
+    cfg.rewards.terms.feet_traj = config_blocks.make_reward_term("feet_traj", -5.0)
+    cfg.rewards.terms.lin_vel_z = config_blocks.make_reward_term("lin_vel_z", -1.0)
+    cfg.rewards.terms.ang_vel_xy = config_blocks.make_reward_term("ang_vel_xy", -0.1)
+    cfg.rewards.terms.orientation = config_blocks.make_reward_term("orientation", -10.0)
+    cfg.rewards.terms.torques = config_blocks.make_reward_term("torques", -0.0002)
+    cfg.rewards.terms.action_rate = config_blocks.make_reward_term("action_rate", -0.01)
+    cfg.rewards.terms.energy = config_blocks.make_reward_term("energy", -0.001)
+    cfg.rewards.terms.feet_slip = config_blocks.make_reward_term("feet_slip", -1.0)
+    cfg.rewards.terms.feet_air_time = config_blocks.make_reward_term("feet_air_time", 5.0)
+    cfg.rewards.terms.dof_pos_limits = config_blocks.make_reward_term("dof_pos_limits", -1.0)
+    cfg.rewards.terms.stand_still = config_blocks.make_reward_term("stand_still", -0.5)
+    cfg.rewards.terms.termination = config_blocks.make_reward_term("termination", -10.0)
+    for name, term in cfg.rewards.terms.items():
+        cfg.rewards.scales[name] = term.scale
     
     # Hyperparameters
     cfg.rewards.tracking_sigma = 0.25

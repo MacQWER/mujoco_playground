@@ -55,4 +55,31 @@ def get_base_rewards_config() -> config_dict.ConfigDict:
     """Base reward setting."""
     rewards = config_dict.ConfigDict()
     rewards.scales = config_dict.ConfigDict()
+    rewards.terms = config_dict.ConfigDict()
     return rewards
+
+
+def make_obs_term(
+    func: str,
+    noise: str | None = None,
+    scale: float = 1.0,
+    enabled: bool = True,
+) -> dict:
+    return {
+        "func": func,
+        "noise": noise,
+        "scale": scale,
+        "enabled": enabled,
+    }
+
+
+def make_reward_term(
+    func: str,
+    scale: float,
+    enabled: bool = True,
+) -> dict:
+    return {
+        "func": func,
+        "scale": scale,
+        "enabled": enabled,
+    }
