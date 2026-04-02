@@ -72,7 +72,10 @@ def maybe_apply_disturbance(
         u_t = 0.5 * jp.sin(jp.pi * t / state.info[duration_seconds_key])
         force = u_t * base_mass * state.info[mag_key] / state.info[duration_seconds_key]
         xfrc_applied = jp.zeros((nbody, 6))
-        xfrc_applied = xfrc_applied.at[base_id, :3].set(force * state.info[dir_key])
+        # Stop the gradient for the disturbance force to prune the computation graph
+        # and ensure pure forward-only physics intervention.
+        actual_dist_force = jax.lax.stop_gradient(force * state.info[dir_key])
+        xfrc_applied = xfrc_applied.at[base_id, :3].set(actual_dist_force)
 
         state.info[rng_key], fields = _sample_disturbance(
             state.info[rng_key], disturbance_cfg, dt, prefix

@@ -59,6 +59,49 @@ def get_base_rewards_config() -> config_dict.ConfigDict:
     return rewards
 
 
+def get_assistive_wrench_config() -> config_dict.ConfigDict:
+    """Assistive wrench settings for base stabilization curriculum."""
+    cfg = config_dict.ConfigDict()
+    cfg.enable = False
+    cfg.z_ref = 0.27
+    cfg.force_limit = 10.0
+    cfg.torque_limit = 5.0
+    cfg.enable_feedforward = True
+    cfg.ff_mass_mode = "base"
+
+    cfg.beta = config_dict.ConfigDict()
+    cfg.beta.initial = 1.0
+    cfg.beta.final = 0.0
+    cfg.beta.max = 1.0
+
+    cfg.gains = config_dict.ConfigDict()
+    cfg.gains.xy_d = 5.0
+    cfg.gains.z_p = 100.0
+    cfg.gains.z_d = 0.0
+    cfg.gains.roll_p = 1.0
+    cfg.gains.roll_d = 0.1
+    cfg.gains.pitch_p = 1.0
+    cfg.gains.pitch_d = 0.1
+    cfg.gains.yaw_d = 1.0
+
+    cfg.curriculum = config_dict.ConfigDict()
+    cfg.curriculum.mode = "linear"
+    cfg.curriculum.start_step = 0
+    cfg.curriculum.end_step = 300000
+    cfg.curriculum.staircase_levels = 10
+    cfg.curriculum.ema_alpha = 0.95
+    cfg.curriculum.tracking_error_threshold = 0.2
+    cfg.curriculum.yaw_error_weight = 0.5
+    cfg.curriculum.decay_per_step = 1e-5
+    cfg.curriculum.hard_disable_after_end = True
+
+    cfg.debug = config_dict.ConfigDict()
+    cfg.debug.force_arrow_scale = 0.25
+    cfg.debug.torque_arrow_scale = 0.18
+    cfg.debug.arrow_radius = 0.008
+    return cfg
+
+
 def make_obs_term(
     func: str,
     noise: str | None = None,

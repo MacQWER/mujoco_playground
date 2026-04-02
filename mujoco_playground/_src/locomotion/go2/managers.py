@@ -6,6 +6,7 @@ from ml_collections import config_dict
 
 from mujoco_playground._src.locomotion.go2.mdp import commands as command_lib
 from mujoco_playground._src.locomotion.go2.mdp import event as event_lib
+from mujoco_playground._src.locomotion.go2 import assistive_wrench_manager as assistive_wrench_lib
 
 
 def _to_config_dict(value: Any) -> config_dict.ConfigDict:
@@ -73,6 +74,15 @@ def sync_manager_state(info: Dict[str, Any]) -> Dict[str, Any]:
     manager_state["rewards"] = {
         "current": info.get("reward_tuple"),
     }
+
+    if "assist_beta" in info:
+        manager_state["assistive_wrench"] = {
+            "beta": info.get("assist_beta"),
+            "force_world": info.get("assist_force_world"),
+            "torque_world": info.get("assist_torque_world"),
+            "force_norm": info.get("assist_force_norm"),
+            "torque_norm": info.get("assist_torque_norm"),
+        }
 
     events = manager_state.setdefault("events", {})
     for prefix in ("pert", "disturbance"):
@@ -261,3 +271,67 @@ class EventManager:
         )
         info = sync_manager_state(state.info)
         return state.replace(info=info)
+
+
+class AssistiveWrenchManager:
+    def __init__(
+        self,
+        cfg: config_dict.ConfigDict,
+        *,
+        base_id: int,
+        base_mass: float,
+        subtree_mass: float,
+        base_inertia: Any,
+    ) -> None:
+        self._manager = assistive_wrench_lib.AssistiveWrenchManager(
+            cfg,
+            base_id=base_id,
+            base_mass=base_mass,
+            subtree_mass=subtree_mass,
+            base_inertia=base_inertia,
+        )
+
+    def init_state(self, info: Dict[str, Any]) -> Dict[str, Any]:
+        info = self._manager.init_state(info)
+        return sync_manager_state(info)
+
+    def maybe_apply(
+        self,
+        data: Any,
+        info: Dict[str, Any],
+        command: Any,
+        *,
+        get_local_linvel: Any,
+        get_global_linvel: Any,
+        get_gyro: Any,
+        get_gravity: Any,
+    ) -> tuple[Any, Dict[str, Any]]:
+        data, info = self._manager.compute_and_apply_wrench(
+            data,
+            info,
+            command,
+            get_local_linvel=get_local_linvel,
+            get_global_linvel=get_global_linvel,
+            get_gyro=get_gyro,
+            get_gravity=get_gravity,
+        )
+        return data, sync_manager_state(info)
+
+    def update_curriculum(
+        self,
+        info: Dict[str, Any],
+        command: Any,
+        *,
+        local_linvel: Any,
+        yaw_rate: Any,
+    ) -> Dict[str, Any]:
+        info = self._manager.update_curriculum(
+            info,
+            command,
+            local_linvel=local_linvel,
+            yaw_rate=yaw_rate,
+        )
+        return sync_manager_state(info)
+
+    def build_modify_scene_fns(self, trajectory: Sequence[Any], **kwargs: Any) -> list[Any]:
+        return self._manager.build_modify_scene_fns(trajectory, **kwargs)

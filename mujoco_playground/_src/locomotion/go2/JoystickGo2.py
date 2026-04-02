@@ -2,6 +2,7 @@ from typing import Any, Dict, Optional, Union, Callable
 import jax
 import jax.numpy as jp
 import numpy as np
+import mediapy as media
 import mujoco
 from mujoco import mjx
 from mujoco.mjx._src import math
@@ -19,6 +20,7 @@ from mujoco_playground._src.locomotion.go2.Util.TrotUtil import (
 from mujoco_playground._src.locomotion.go2.configs import joystick_config
 from mujoco_playground._src.locomotion.go2.mdp import rewards as reward_lib
 from mujoco_playground._src.locomotion.go2.Util import JoystickUtil as joystick_utils
+from mujoco_playground._src.locomotion.go2 import managers as manager_lib
 
 
 def default_config() -> config_dict.ConfigDict:
@@ -127,7 +129,17 @@ class JoystickGo2(Go2Env):
         self.foot_offsets_xy = foot_offset_local[:, :2]
 
         self.base_mass = self.mj_model.body("base").mass
+        self.subtree_mass = self.mj_model.body_subtreemass[self.base_id]
         self._nominal_base_height = self._init_q[2]
+
+        self.base_inertia = jp.array(self.mj_model.body_inertia[self.base_id])
+        self.assistive_wrench_manager = manager_lib.AssistiveWrenchManager(
+            self._config.assistive_wrench,
+            base_id=self.base_id,
+            base_mass=self.base_mass,
+            subtree_mass=self.subtree_mass,
+            base_inertia=self.base_inertia,
+        )
 
         # Step height parameters (coupled to step length; capped)
         self._step_height_max = float(getattr(self._config.env, "step_height", 0.1128))
@@ -219,6 +231,7 @@ class JoystickGo2(Go2Env):
             dt=self.dt,
             prefix="pert",
         )
+        state_info = self.assistive_wrench_manager.init_state(state_info)
         state_info = self._sync_info(state_info)
         self._update_foot_cycloid_ref(state_info)
 
@@ -237,6 +250,10 @@ class JoystickGo2(Go2Env):
         residual_obs = self._get_residual_obs(data, state_info)
         
         metrics = state_info['reward_tuple'].copy()
+        metrics["assist_beta"] = jp.array(0.0)
+        metrics["assist_force_norm"] = jp.array(0.0)
+        metrics["assist_torque_norm"] = jp.array(0.0)
+        
         return self._init_state(data, residual_obs, state_info, metrics=metrics)
 
     # -------- Step --------
@@ -252,6 +269,19 @@ class JoystickGo2(Go2Env):
         )
 
         info = state.info
+
+        if self._config.assistive_wrench.enable:
+            data, info = self.assistive_wrench_manager.maybe_apply(
+                state.data,
+                info,
+                info["command"],
+                get_local_linvel=self.get_local_linvel,
+                get_global_linvel=self.get_global_linvel,
+                get_gyro=self.get_gyro,
+                get_gravity=self.get_gravity,
+            )
+            state = state.replace(data=data, info=info)
+            info = state.info
 
         # 1. Mix anchor and residual actions into the applied control.
         action = self._clip_action(action, -1.0, 1.0)
@@ -301,6 +331,13 @@ class JoystickGo2(Go2Env):
         info["last_residual"] = action
         info["last_action"] = ctrl
 
+        info = self.assistive_wrench_manager.update_curriculum(
+            info,
+            info["command"],
+            local_linvel=self.get_local_linvel(data),
+            yaw_rate=self.get_gyro(data)[2],
+        )
+
         info = self.command_manager.update(
             info,
             dt=self.dt,
@@ -319,6 +356,9 @@ class JoystickGo2(Go2Env):
         info['anchor_action'] = next_anchor_act
 
         self._update_metrics(state.metrics, reward_dict)
+        state.metrics["assist_beta"] = info["assist_beta"]
+        state.metrics["assist_force_norm"] = info["assist_force_norm"]
+        state.metrics["assist_torque_norm"] = info["assist_torque_norm"]
         info['reward_tuple'] = reward_dict
 
         # 7. Next observation.
@@ -421,3 +461,38 @@ class JoystickGo2(Go2Env):
             trail_stride=trail_stride,
             trail_max=trail_max,
         )
+
+
+    def visualize_assistive_wrench(
+        self,
+        trajectory,
+        render_every: int = 1,
+        height: int = 480,
+        width: int = 640,
+        camera: Optional[str] = None,
+        save_path: Optional[str] = None,
+        scene_option: Optional[mujoco.MjvOption] = None,
+    ):
+        if not isinstance(trajectory, list):
+            raise ValueError("trajectory must be a list of states to visualize assistive wrench")
+
+        modify_scene_fns = self.assistive_wrench_manager.build_modify_scene_fns(
+            trajectory,
+            render_every=render_every,
+            force_arrow_scale=self._config.assistive_wrench.debug.force_arrow_scale,
+            torque_arrow_scale=self._config.assistive_wrench.debug.torque_arrow_scale,
+            arrow_radius=self._config.assistive_wrench.debug.arrow_radius,
+        )
+        frames = self._render_trajectory(
+            trajectory=trajectory,
+            render_every=render_every,
+            height=height,
+            width=width,
+            camera=camera,
+            save_path=save_path,
+            scene_option=scene_option,
+            modify_scene_fns=modify_scene_fns,
+        )
+        fps = 1.0 / (self.dt * render_every)
+        media.show_video(frames, fps=fps, loop=True)
+        return frames

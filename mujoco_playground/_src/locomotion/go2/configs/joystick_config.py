@@ -6,6 +6,8 @@ def default_config() -> config_dict.ConfigDict:
     """Main config builder for Trot task."""
     # base sim config
     cfg = config_blocks.get_sim_config()
+    # cfg.Kp = 35.0
+    # cfg.Kd = 0.5
     
     # env config
     cfg.env = config_blocks.get_env_config()
@@ -80,6 +82,9 @@ def default_config() -> config_dict.ConfigDict:
     # disturbance config
     cfg.disturbance = config_blocks.get_disturbance_config()
     cfg.disturbance.enable = True
+
+    # assistive wrench config
+    cfg.assistive_wrench = config_blocks.get_assistive_wrench_config()
 
     # noise config
     cfg.noise_config = config_blocks.get_noise_config()
