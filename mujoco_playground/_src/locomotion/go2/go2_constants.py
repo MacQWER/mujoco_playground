@@ -27,7 +27,7 @@ ROOT_BODY = "base"
 # go2 feet sites（注意：go2 使用 *_foot）
 FEET_SITES = ["FL_foot", "FR_foot", "RL_foot", "RR_foot"]
 
-FEET_POS_SENSOR = [f"{site}_pos" for site in FEET_SITES]
+FEET_POS_SENSOR = [f"{geom}_pos" for geom in FEET_GEOMS]
 
 # go2 根 body 名称
 ROOT_BODY = "base"
@@ -71,7 +71,7 @@ ANCHOR_PATH = None
 RESIDUAL_OBS_DIM = ANCHOR_OBS_DIM
 RESIDUAL_ACT_DIM = 12
 # RESIDUAL_PATH = '/data/mujoco_playground/mujoco_playground/experimental/learning/checkpoints/Go2Joystick2-20260324-080452-apg/params.pkl'
-RESIDUAL_PATH = '/data/mujoco_playground/mujoco_playground/experimental/learning/checkpoints/Go2Joystick2-20260324-120312-apg/params.pkl'
+RESIDUAL_PATH = '/data/mujoco_playground/mujoco_playground/experimental/learning/checkpoints/Go2Joystick2-20260403-070849-apg/params.pkl'
 
 # pattern generator 相关常量
 STEP_K = 13

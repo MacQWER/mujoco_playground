@@ -8,8 +8,6 @@ import matplotlib.pyplot as plt
 import mujoco
 from mujoco import mjx
 
-from apg_alg.networks import apg_networks
-import functools
 
 from mujoco_playground._src import mjx_env
 from mujoco_playground._src.locomotion.go2 import go2_constants as consts
@@ -125,7 +123,7 @@ def update_raibert_target(env, data, info):
     info['xy0'] = jp.where(new_step, feet_pos, info['xy0'])
     info['k0'] = jp.where(new_step, s, info['k0'])
 
-    feet_z = data.site_xpos[env._feet_site_id][:, 2]
+    feet_z = env.get_feet_pos(data)[:, 2]
     info['z0'] = jp.where(new_step, feet_z, info['z0'])
 
 # ----------------- Phase Alignment Check -----------------
@@ -228,7 +226,7 @@ def check_phase_alignment(env):
         return float(total_err), float(pos_err), float(vel_err)
 
     def gait_terms(data: mjx.Data, info: dict[str, Any]):
-        foot_pos = data.site_xpos[env._feet_site_id]
+        foot_pos = env.get_feet_pos(data)
         foot_z = foot_pos[..., -1]
         contact = jax.nn.sigmoid((0.025 - foot_z) * 100.0)
         expected_stance = 1.0 - info['foot_swing']
@@ -476,6 +474,9 @@ def play_cycloid_foot_trajectory(
 
 # ----------------- Anchor Policy Util ----------------- 
 def get_anchor_inference_fn(path: str):
+    import functools
+    from apg_alg.networks import apg_networks
+
     from brax.io import model
     full_params = model.load_params(path)
 

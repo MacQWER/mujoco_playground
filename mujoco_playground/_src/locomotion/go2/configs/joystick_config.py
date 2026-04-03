@@ -85,6 +85,26 @@ def default_config() -> config_dict.ConfigDict:
 
     # assistive wrench config
     cfg.assistive_wrench = config_blocks.get_assistive_wrench_config()
+    cfg.assistive_wrench.enable = True
+    cfg.assistive_wrench.enable_feedforward = True
+    cfg.assistive_wrench.ff_mass_mode = "subtree"
+    cfg.assistive_wrench.force_limit = 200.0
+    cfg.assistive_wrench.torque_limit = 50.0
+    cfg.assistive_wrench.gains.xy_d = 100.0
+    cfg.assistive_wrench.gains.z_p = 500.0
+    cfg.assistive_wrench.gains.z_d = 50.0
+    cfg.assistive_wrench.gains.roll_p = 50.0
+    cfg.assistive_wrench.gains.roll_d = 5.0
+    cfg.assistive_wrench.gains.pitch_p = 50.0
+    cfg.assistive_wrench.gains.pitch_d = 5.0
+    cfg.assistive_wrench.gains.yaw_d = 50.0
+    cfg.assistive_wrench.beta.initial = 1.0
+    cfg.assistive_wrench.beta.final = 0.0
+    cfg.assistive_wrench.curriculum.mode = "staircase"
+    cfg.assistive_wrench.curriculum.staircase_levels = 5
+    cfg.assistive_wrench.curriculum.start_step = 0
+    cfg.assistive_wrench.curriculum.end_step = int(256 * 64 * 0.5)  # 50% training progress
+
 
     # noise config
     cfg.noise_config = config_blocks.get_noise_config()

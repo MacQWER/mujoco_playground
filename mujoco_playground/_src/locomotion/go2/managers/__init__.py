@@ -6,7 +6,8 @@ from ml_collections import config_dict
 
 from mujoco_playground._src.locomotion.go2.mdp import commands as command_lib
 from mujoco_playground._src.locomotion.go2.mdp import event as event_lib
-from mujoco_playground._src.locomotion.go2 import assistive_wrench_manager as assistive_wrench_lib
+from . import assistive_wrench_manager as assistive_wrench_lib
+from . import state_alignment_manager as state_alignment_lib
 
 
 def _to_config_dict(value: Any) -> config_dict.ConfigDict:
@@ -335,3 +336,31 @@ class AssistiveWrenchManager:
 
     def build_modify_scene_fns(self, trajectory: Sequence[Any], **kwargs: Any) -> list[Any]:
         return self._manager.build_modify_scene_fns(trajectory, **kwargs)
+
+
+class StateAlignmentManager:
+    def __init__(self, mjx_env_inst: Any, native_env_inst: Any) -> None:
+        self._manager = state_alignment_lib.StateAlignmentManager(
+            mjx_env_inst,
+            native_env_inst,
+        )
+
+    def build_aligned_data(self, state: state_alignment_lib.CanonicalState) -> Any:
+        return self._manager.build_aligned_data(state)
+
+    def make_step_fns(
+        self,
+        *,
+        initial_mjx_state: Any,
+        initial_native_state: Any,
+        policy_fn: Callable[[Any, Any], Any],
+        horizon: int,
+        loss_fn: Callable[[Any, Any], Any],
+    ) -> tuple[Any, Any]:
+        return self._manager.make_step_fns(
+            initial_mjx_state=initial_mjx_state,
+            initial_native_state=initial_native_state,
+            policy_fn=policy_fn,
+            horizon=horizon,
+            loss_fn=loss_fn,
+        )

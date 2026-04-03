@@ -85,12 +85,13 @@ def rotate_inv(v: jp.ndarray, q: jp.ndarray) -> jp.ndarray:
 # ----------------- utils end -----------------
 
 # ----------------- Anchor Policy Util ----------------- 
-from apg_alg.networks import apg_networks
-import functools
 
 from mujoco_playground._src.locomotion.go2 import go2_constants as consts
 
 def get_anchor_inference_fn(path: str):
+    import functools
+    from apg_alg.networks import apg_networks
+
     from brax.io import model
     full_params = model.load_params(path)
 
