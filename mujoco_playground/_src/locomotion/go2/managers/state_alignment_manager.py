@@ -126,8 +126,10 @@ class StateAlignmentManager:
     def __init__(self, mjx_env_inst: Any, native_env_inst: Any) -> None:
         self._mjx_env = mjx_env_inst
         self._oracle = LocalNativeOracle(native_env_inst)
+        self._build_aligned_data_jit = jax.jit(self._build_aligned_data_impl)
+        self._build_aligned_state_jit = jax.jit(self._build_aligned_state_impl)
 
-    def build_aligned_data(self, state: CanonicalState) -> Any:
+    def _build_aligned_data_impl(self, state: CanonicalState) -> Any:
         data = mjx_env.make_data(
             self._mjx_env.mj_model,
             qpos=state.qpos,
@@ -139,15 +141,95 @@ class StateAlignmentManager:
         )
         return mjx.forward(self._mjx_env.mjx_model, data)
 
-    def _build_aligned_state(self, diff_state: Any, non_diff_state: Any, alpha: jax.Array) -> Any:
+    def build_aligned_data(self, state: CanonicalState) -> Any:
+        return self._build_aligned_data_jit(state)
+
+    def _build_aligned_state_impl(
+        self, diff_state: Any, non_diff_state: Any, alpha: jax.Array
+    ) -> Any:
         aligned_core = align_tree(
             extract_canonical_state(non_diff_state.data),
             extract_canonical_state(diff_state.data),
             alpha,
         )
-        aligned_data = self.build_aligned_data(aligned_core)
+        aligned_data = self._build_aligned_data_jit(aligned_core)
         aligned_obs = self._mjx_env._get_residual_obs(aligned_data, diff_state.info)
         return diff_state.replace(data=aligned_data, obs=aligned_obs)
+
+    def build_aligned_state(
+        self, diff_state: Any, non_diff_state: Any, alpha: jax.Array
+    ) -> Any:
+        return self._build_aligned_state_jit(diff_state, non_diff_state, alpha)
+
+    def _build_aligned_state(self, diff_state: Any, non_diff_state: Any, alpha: jax.Array) -> Any:
+        return self.build_aligned_state(diff_state, non_diff_state, alpha)
+
+    def make_rollout_fns(
+        self,
+        *,
+        initial_mjx_state: Any,
+        initial_native_state: Any,
+        policy_fn: Callable[[Any, Any], tuple[Any, Any]],
+        horizon: int,
+    ) -> tuple[Callable[[jax.Array], dict[str, Any]], Callable[[jax.Array, jax.Array], dict[str, Any]]]:
+        native_state_spec = tree_shape_dtype(initial_native_state)
+
+        def rollout_once(alpha: jax.Array | None, eta: jax.Array) -> dict[str, Any]:
+            def body_fn(carry: tuple[Any, Any, jax.Array], _unused: Any) -> tuple[tuple[Any, Any, jax.Array], dict[str, Any]]:
+                mjx_state, native_state, rng = carry
+                is_active = 1.0 - jp.asarray(mjx_state.done)
+                action_rng, next_rng = jax.random.split(rng)
+                base_action, _ = policy_fn(mjx_state.obs, action_rng)
+                action = jp.clip(eta * jp.asarray(base_action), -1.0, 1.0)
+                action = action * is_active
+
+                diff_next = self._mjx_env.step(mjx_state, action)
+                native_next = oracle_step_callback(
+                    self._oracle.step,
+                    native_state_spec,
+                    native_state,
+                    action,
+                )
+
+                if alpha is None:
+                    aligned_next = diff_next
+                else:
+                    aligned_next = self.build_aligned_state(diff_next, native_next, alpha)
+
+                mjx_next = jax.tree_util.tree_map(
+                    lambda new, old: jp.where(is_active, new, old),
+                    aligned_next,
+                    mjx_state,
+                )
+                native_next = jax.tree_util.tree_map(
+                    lambda new, old: jp.where(is_active, new, old),
+                    native_next,
+                    native_state,
+                )
+                rollout_step = {
+                    "mjx_state": mjx_next,
+                    "native_state": native_next,
+                }
+                return (mjx_next, native_next, next_rng), rollout_step
+
+            init_rng = initial_mjx_state.info["rng"]
+            (_, _, _), traj = jax.lax.scan(
+                body_fn,
+                (initial_mjx_state, initial_native_state, init_rng),
+                xs=None,
+                length=horizon,
+            )
+            return traj
+
+        @jax.jit
+        def mjx_rollout(eta: jax.Array) -> dict[str, Any]:
+            return rollout_once(None, eta)
+
+        @jax.jit
+        def align_rollout(eta: jax.Array, alpha: jax.Array) -> dict[str, Any]:
+            return rollout_once(alpha, eta)
+
+        return mjx_rollout, align_rollout
 
     def make_step_fns(
         self,

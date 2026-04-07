@@ -348,6 +348,29 @@ class StateAlignmentManager:
     def build_aligned_data(self, state: state_alignment_lib.CanonicalState) -> Any:
         return self._manager.build_aligned_data(state)
 
+    def build_aligned_state(
+        self,
+        diff_state: Any,
+        non_diff_state: Any,
+        alpha: jax.Array,
+    ) -> Any:
+        return self._manager.build_aligned_state(diff_state, non_diff_state, alpha)
+
+    def make_rollout_fns(
+        self,
+        *,
+        initial_mjx_state: Any,
+        initial_native_state: Any,
+        policy_fn: Callable[[Any, Any], Any],
+        horizon: int,
+    ) -> tuple[Any, Any]:
+        return self._manager.make_rollout_fns(
+            initial_mjx_state=initial_mjx_state,
+            initial_native_state=initial_native_state,
+            policy_fn=policy_fn,
+            horizon=horizon,
+        )
+
     def make_step_fns(
         self,
         *,
