@@ -232,7 +232,95 @@ def stand_still(data, info, cfg, **kwargs):
     return jp.sum(jp.abs(qpos - default_ap_pose)) * still_mask
 
 
+def pose(data, info, cfg, **kwargs):
+    """Reward for staying close to the default pose."""
+    del info, cfg
+    default_ap_pose = kwargs['default_ap_pose']
+    qpos = data.qpos[7:]
+    weight = jp.array([1.0, 1.0, 0.1] * 4)
+    err = jp.sum(jp.square(qpos - default_ap_pose) * weight)
+    return jp.exp(-err)
+
+
+def feet_clearance(data, info, cfg, **kwargs):
+    """Penalty for swing feet deviating from the configured target height."""
+    del info
+    feet_inds = kwargs['feet_inds']
+    foot_linvel_sensor_adr = kwargs.get('foot_linvel_sensor_adr', None)
+
+    if foot_linvel_sensor_adr is None:
+        return 0.0
+
+    feet_vel = data.sensordata[foot_linvel_sensor_adr]
+    vel_xy = feet_vel[..., :2]
+    vel_norm = jp.sqrt(jp.linalg.norm(vel_xy, axis=-1))
+    foot_z = data.geom_xpos[feet_inds][:, 2]
+    target_height = cfg.rewards.max_foot_height
+    delta = jp.abs(foot_z - target_height)
+    return jp.sum(delta * vel_norm)
+
+
+def feet_height(data, info, cfg, **kwargs):
+    """Penalty for swing peak height differing from the configured target."""
+    del data
+    move_mask = kwargs.get('move_mask', 1.0)
+    first_contact = kwargs['first_contact']
+    swing_peak = info['swing_peak']
+    target_height = cfg.rewards.max_foot_height
+
+    error = swing_peak / target_height - 1.0
+    return jp.sum(jp.square(error) * first_contact) * move_mask
+
+
 def termination(data, info, cfg, **kwargs):
     """Soft termination penalty."""
     del data, info, cfg
     return kwargs['soft_done']
+
+
+# =========================================================================
+# Trot Gait Rewards
+# =========================================================================
+
+def contact_count_penalty(data, info, cfg, **kwargs):
+    """Penalize deviation from 2 feet in contact (ideal trot pattern).
+
+    In a proper trot gait, diagonal leg pairs move together, resulting in
+    exactly 2 feet in contact at any time (FL+RR or FR+RL).
+
+    Only applied when velocity command is non-zero (during movement).
+    """
+    contact = kwargs['contact']
+    n_contact = jp.sum(contact)
+    move_mask = kwargs.get('move_mask', 1.0)
+    # 完美逻辑，限制接触脚数为 2，仅在速度命令非 0 时应用
+    return jp.square(n_contact - 2.0) * move_mask
+
+
+def diagonal_sync_penalty(data, info, cfg, **kwargs):
+    """Penalize asymmetry between diagonal leg pairs on Hip and Calf joints.
+
+    In trot gait, diagonal legs should move in phase:
+    - FL (front-left) should mirror RR (rear-right)
+    - FR (front-right) should mirror RL (rear-left)
+
+    This reward encourages this diagonal symmetry pattern by penalizing
+    differences in Hip and Calf joint positions.
+
+    Only applied when velocity command is non-zero (during movement).
+    """
+    # action 按 [FL, FR, RL, RR] 排序，每条腿 3 个关节 (abduction, hip, calf)
+    action = kwargs['current_action']
+    move_mask = kwargs.get('move_mask', 1.0)
+
+    # 只取 Hip 和 Calf 关节 (每条腿的索引 1 和 2)
+    fl_hip_calf = action[1:3]    # FL 腿的 hip, calf
+    fr_hip_calf = action[4:6]    # FR 腿的 hip, calf
+    rl_hip_calf = action[7:9]    # RL 腿的 hip, calf
+    rr_hip_calf = action[10:12]  # RR 腿的 hip, calf
+
+    # 计算对角线的平方差
+    diag_fl_rr = jp.sum(jp.square(fl_hip_calf - rr_hip_calf))
+    diag_fr_rl = jp.sum(jp.square(fr_hip_calf - rl_hip_calf))
+
+    return (diag_fl_rr + diag_fr_rl) * move_mask

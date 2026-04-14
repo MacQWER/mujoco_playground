@@ -47,6 +47,11 @@ def default_config() -> config_dict.ConfigDict:
     
     # reward config
     cfg.rewards = config_blocks.get_base_rewards_config()
+
+    # =================================================================
+    # ORIGINAL REWARD CONFIG (TrotGo2 style - dense rewards, 19 terms)
+    # Commented out, preserved for reference.
+    # =================================================================
     cfg.rewards.terms.tracking_lin_vel = config_blocks.make_reward_term("tracking_lin_vel", 3.0)
     cfg.rewards.terms.tracking_ang_vel = config_blocks.make_reward_term("tracking_ang_vel", 2.0)
     cfg.rewards.terms.base_height_tracking = config_blocks.make_reward_term("base_height_tracking", 0.5)
@@ -67,6 +72,43 @@ def default_config() -> config_dict.ConfigDict:
     cfg.rewards.terms.termination = config_blocks.make_reward_term("termination", -10.0)
     for name, term in cfg.rewards.terms.items():
         cfg.rewards.scales[name] = term.scale
+
+    # =================================================================
+    # SMOOTH REWARD CONFIG (sparse rewards, ~12 terms)
+    # Inspired by smooth_joystick design.
+    # =================================================================
+    # cfg.rewards.terms = config_dict.ConfigDict()
+
+    # # Tracking (core)
+    # cfg.rewards.terms.tracking_lin_vel = config_blocks.make_reward_term("tracking_lin_vel", 1.5)
+    # cfg.rewards.terms.tracking_ang_vel = config_blocks.make_reward_term("tracking_ang_vel", 1.0)
+
+    # # Base stability
+    # cfg.rewards.terms.lin_vel_z = config_blocks.make_reward_term("lin_vel_z", -0.5)
+    # cfg.rewards.terms.ang_vel_xy = config_blocks.make_reward_term("ang_vel_xy", -0.05)
+    # cfg.rewards.terms.orientation = config_blocks.make_reward_term("orientation", -5.0)
+
+    # # Regularization
+    # cfg.rewards.terms.torques = config_blocks.make_reward_term("torques", -0.0002)
+    # cfg.rewards.terms.action_rate = config_blocks.make_reward_term("action_rate", -0.01)
+    # cfg.rewards.terms.energy = config_blocks.make_reward_term("energy", -0.001)
+
+    # # Feet
+    # cfg.rewards.terms.feet_slip = config_blocks.make_reward_term("feet_slip", -0.1)
+    # cfg.rewards.terms.feet_air_time = config_blocks.make_reward_term("feet_air_time", 0.1)
+
+    # # Trot Gait
+    # cfg.rewards.terms.contact_count_penalty = config_blocks.make_reward_term("contact_count_penalty", -0.05)
+    # cfg.rewards.terms.diagonal_sync_penalty = config_blocks.make_reward_term("diagonal_sync_penalty", -0.1)
+
+    # # Other
+    # cfg.rewards.terms.pose = config_blocks.make_reward_term("pose", 0.1)
+    # cfg.rewards.terms.termination = config_blocks.make_reward_term("termination", -1.0)
+    # cfg.rewards.terms.stand_still = config_blocks.make_reward_term("stand_still", -1.0)
+    # cfg.rewards.terms.dof_pos_limits = config_blocks.make_reward_term("dof_pos_limits", -1.0)
+
+    # for name, term in cfg.rewards.terms.items():
+    #     cfg.rewards.scales[name] = term.scale
     
     # Hyperparameters
     cfg.rewards.tracking_sigma = 0.25
@@ -74,6 +116,7 @@ def default_config() -> config_dict.ConfigDict:
     cfg.rewards.joint_pose_tracking_sigma = 0.5
     cfg.rewards.joint_vel_tracking_sigma = 2.0
     cfg.rewards.gait_phase_tracking_sigma = 0.25
+    cfg.rewards.max_foot_height = 0.1
 
     # anchor config
     cfg.anchor = config_dict.ConfigDict()

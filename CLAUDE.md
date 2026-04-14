@@ -188,7 +188,30 @@ eval_env = locomotion.load("Go2JoystickMujoco", config=native_env_cfg)
 - ✅ `real_world_fine_tuning.ipynb` updated to use `Go2AlignmentEnv`
 - ✅ Domain randomization removed (set to `None`) for real-world fine-tuning
 - ✅ Eval environment uses `Go2JoystickMujoco` (native only, no MJX overhead)
-- ⏳ Ready to run APG fine-tuning experiments
+- ⏸️ APG training blocked by simulation instability issue (see Known Issues below)
+
+### Known Issues
+
+**Issue: Simulation Instability (NaN/Inf in QACC/CTRL)**
+
+When running APG training with `Go2AlignmentEnv` + `NativeEnvWrapper` for eval:
+```
+WARNING: Nan, Inf or huge value in QACC at DOF 0. The simulation is unstable.
+WARNING: Nan, Inf or huge value in CTRL at ACTUATOR 0. The simulation is unstable.
+```
+
+**Possible causes to investigate:**
+1. `NativeEnvWrapper.step()` may have issues with state conversion (JAX ↔ numpy)
+2. `BraxAutoResetWrapper` may not handle `NativeEnvWrapper` state.info correctly
+3. Physics mismatch between MJX (train) and native MuJoCo (eval) causing instability
+4. Action scaling (`eta`) or control limits may need adjustment
+5. The `pure_callback` in `NativeEnvWrapper` may have edge cases with vmap/pmap
+
+**Next steps:**
+- Test `NativeEnvWrapper` in isolation (without APG wrapper) to verify reset/step stability
+- Check if `state.info` structure is preserved correctly through `pure_callback`
+- Verify action clipping and control limits match between train/eval envs
+- Consider simplifying: use same environment for train and eval first, then add mismatch
 
 ### How to Run
 

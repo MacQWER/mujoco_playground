@@ -162,7 +162,7 @@ class JoystickGo2(Go2Env):
         qpos = self._init_q
         qvel = jp.zeros(self.mjx_model.nv)
         
-        # # x=+U(-0.5, 0.5), y=+U(-0.5, 0.5), yaw=U(-3.14, 3.14).
+        # x=+U(-0.5, 0.5), y=+U(-0.5, 0.5), yaw=U(-3.14, 3.14).
         # rng, key = jax.random.split(rng)
         # dxy = jax.random.uniform(key, (2,), minval=-0.5, maxval=0.5)
         # qpos = qpos.at[0:2].set(qpos[0:2] + dxy)
@@ -172,11 +172,11 @@ class JoystickGo2(Go2Env):
         # new_quat = math.quat_mul(qpos[3:7], quat)
         # qpos = qpos.at[3:7].set(new_quat)
 
-        # # d(xyzrpy)=U(-0.5, 0.5)
-        # rng, key = jax.random.split(rng)
-        # qvel = qvel.at[0:6].set(
-        #     jax.random.uniform(key, (6,), minval=-0.5, maxval=0.5)
-        # )
+        # d(xyzrpy)=U(-0.5, 0.5)
+        rng, key = jax.random.split(rng)
+        qvel = qvel.at[0:6].set(
+            jax.random.uniform(key, (6,), minval=-0.5, maxval=0.5)
+        )
 
         data = mjx_env.make_data(self.mj_model, qpos=qpos, qvel=qvel, ctrl=jp.zeros(12),
                                  impl=self.mjx_model.impl.value, 

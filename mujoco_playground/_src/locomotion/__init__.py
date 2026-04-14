@@ -46,6 +46,7 @@ from mujoco_playground._src.locomotion.go2 import joystick as go2_joystick
 from mujoco_playground._src.locomotion.go2 import JoystickGo2 as go2_joystick2
 from mujoco_playground._src.locomotion.go2 import JoystickGo2Mujoco as go2_joystick_mujoco
 from mujoco_playground._src.locomotion.go2 import smooth_joystick as go2_smooth_joystick
+from mujoco_playground._src.locomotion.go2 import alignment_env as go2_alignment
 from mujoco_playground._src.locomotion.go2.mdp import randomize as go2_randomize
 
 
@@ -68,6 +69,7 @@ _envs = {
     "Go2Trot": functools.partial(
         trot_go2.TrotGo2, task=None
     ),
+    "Go2AlignmentEnv": go2_alignment._default_env_factory,
     "AnymalTrot": functools.partial(
         anymal_trot.TrotAnymal, task=None
     ),
@@ -121,6 +123,7 @@ _cfgs = {
     "Go2Joystick2": go2_joystick2.default_config,
     "Go2JoystickMujoco": go2_joystick_mujoco.default_config,
     "Go2Trot": trot_go2.default_config,
+    "Go2AlignmentEnv": go2_alignment.default_config,
     "AnymalTrot": anymal_trot.default_config,
     "ApolloJoystickFlatTerrain": apollo_joystick.default_config,
     "BarkourJoystick": barkour_joystick.default_config,
