@@ -90,28 +90,38 @@ def base_height_tracking(data, info, cfg, **kwargs):
 
 
 def joint_pose_tracking(data, info, cfg, **kwargs):
-    """Reward for tracking kinematic reference joint positions."""
+    """Reward for tracking kinematic reference joint positions.
+
+    Uses gait_step (resets to 0 when stationary) for phase indexing.
+    move_mask ensures this reward is only active during movement.
+    """
+    move_mask = kwargs.get('move_mask', 1.0)
     kinematic_ref_qpos = kwargs['kinematic_ref_qpos']
     l_cycle = kwargs['l_cycle']
 
-    step_idx = jp.array(info['step'] % l_cycle, int)
+    step_idx = jp.array(info['gait_step'] % l_cycle, int)
     ref_qpos = kinematic_ref_qpos[step_idx][7:]
     qpos = data.qpos[7:19]
     weight = jp.array([1.0, 1.0, 0.1] * 4)
     err = jp.sum(jp.square(qpos - ref_qpos) * weight)
-    return jp.exp(-err / cfg.rewards.joint_pose_tracking_sigma)
+    return jp.exp(-err / cfg.rewards.joint_pose_tracking_sigma) * move_mask
 
 
 def joint_vel_tracking(data, info, cfg, **kwargs):
-    """Reward for tracking kinematic reference joint velocities."""
+    """Reward for tracking kinematic reference joint velocities.
+
+    Uses gait_step (resets to 0 when stationary) for phase indexing.
+    move_mask ensures this reward is only active during movement.
+    """
+    move_mask = kwargs.get('move_mask', 1.0)
     kinematic_ref_qvel = kwargs['kinematic_ref_qvel']
     l_cycle = kwargs['l_cycle']
 
-    step_idx = jp.array(info['step'] % l_cycle, int)
+    step_idx = jp.array(info['gait_step'] % l_cycle, int)
     ref_qvel = kinematic_ref_qvel[step_idx][6:]
     qvel = data.qvel[6:]
     err = jp.sum(jp.square(qvel - ref_qvel))
-    return jp.exp(-err / cfg.rewards.joint_vel_tracking_sigma)
+    return jp.exp(-err / cfg.rewards.joint_vel_tracking_sigma) * move_mask
 
 
 def gait_phase_tracking(data, info, cfg, **kwargs):
@@ -124,25 +134,40 @@ def gait_phase_tracking(data, info, cfg, **kwargs):
 
 
 def feet_traj(data, info, cfg, **kwargs):
-    """Cost for foot trajectory tracking based on Raibert heuristic."""
-    move_mask = kwargs.get('move_mask', 1.0)
+    """Cost for foot trajectory tracking based on Raibert heuristic.
+
+    - Swing legs: track cycloid reference trajectory
+    - Stance legs: hold position at touchdown anchor (xy0, z0)
+
+    Self-consistent: when stationary, all feet are stance legs holding position.
+    """
     feet_inds = kwargs['feet_inds']
     foot_linvel_sensor_adr = kwargs.get('foot_linvel_sensor_adr', None)
 
     curr_feet = data.geom_xpos[feet_inds]
     ref_pos = info['foot_ref_pos']
     swing_mask = info['foot_swing'][:, None]
+    stance_mask = 1.0 - swing_mask  # Stance legs = 1, Swing legs = 0
 
-    pos_err = jp.sum(jp.square((curr_feet - ref_pos) * swing_mask))
+    # Swing leg error: track cycloid trajectory
+    swing_err = jp.sum(jp.square((curr_feet - ref_pos) * swing_mask))
+
+    # Stance leg error: hold position at touchdown anchor
+    stance_ref = jp.concatenate([info['xy0'], info['z0'][:, None]], axis=1)
+    stance_err = jp.sum(jp.square((curr_feet - stance_ref) * stance_mask))
+
+    # Total position error
+    pos_err = swing_err + stance_err
+
+    # Velocity error (swing legs only)
     vel_err = 0.0
-
     if foot_linvel_sensor_adr is not None:
         feet_vel = data.sensordata[foot_linvel_sensor_adr]
         vel_xy = feet_vel[..., :2]
         ref_v_xy = info['foot_ref_v_xy']
         vel_err = jp.sum(jp.square((vel_xy - ref_v_xy) * swing_mask[:, :2]))
 
-    return (pos_err + cfg.env.foot_traj_vel_weight * vel_err) * move_mask
+    return pos_err + cfg.env.foot_traj_vel_weight * vel_err
 
 
 def lin_vel_z(data, info, cfg, **kwargs):
@@ -186,10 +211,12 @@ def action_rate(data, info, cfg, **kwargs):
 
 
 def feet_slip(data, info, cfg, **kwargs):
-    """Penalty for foot slipping while in contact."""
+    """Penalty for foot slipping while in contact.
+
+    Self-consistent: penalizes sliding when in contact, regardless of command.
+    Stationary feet should not slip.
+    """
     del info, cfg
-    move_mask = kwargs.get('move_mask', 1.0)
-    contact = kwargs['contact']
     foot_linvel_sensor_adr = kwargs.get('foot_linvel_sensor_adr', None)
 
     if foot_linvel_sensor_adr is None:
@@ -198,8 +225,8 @@ def feet_slip(data, info, cfg, **kwargs):
     feet_vel = data.sensordata[foot_linvel_sensor_adr]
     vel_xy = feet_vel[..., :2]
     vel_xy_norm_sq = jp.sum(jp.square(vel_xy), axis=-1)
-    effective_contact = jax.nn.relu(contact - 0.5) * 2.0
-    return jp.sum(vel_xy_norm_sq * effective_contact) * move_mask
+    effective_contact = jax.nn.relu(kwargs['contact'] - 0.5) * 2.0
+    return jp.sum(vel_xy_norm_sq * effective_contact)
 
 
 def feet_air_time(data, info, cfg, **kwargs):

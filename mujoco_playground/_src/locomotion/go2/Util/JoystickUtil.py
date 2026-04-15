@@ -14,19 +14,36 @@ from mujoco_playground._src.locomotion.go2 import go2_constants as consts
 from mujoco_playground._src.locomotion.go2.Util.TrotUtil import rotate
 
 # ----------------- Foot Trajectory Util -----------------
-def get_swing_mask(env, step):
-    """Return swing mask (4,) for FL, FR, RL, RR at current phase block."""
-    step = jp.asarray(step, dtype=jp.int32)
-    chunk_idx = step // env.step_k
+def get_swing_mask(env, info):
+    """Return swing mask (4,) for FL, FR, RL, RR at current phase block.
+
+    Uses gait_step (which resets to 0 when stationary) instead of global step.
+    When stationary, all feet remain in stance mode (no swinging).
+    """
+    gait_step = info['gait_step']
+    is_stationary = info['is_stationary']
+
+    # 静止时所有脚都不摆动（四脚站立）
+    stationary_swing = jp.array([0.0, 0.0, 0.0, 0.0])
+
+    # 运动时按 trot 模式交替
+    gait_step = jp.asarray(gait_step, dtype=jp.int32)
+    chunk_idx = gait_step // env.step_k
     even_chunk = (chunk_idx % 2 == 0)
     swing_even = jp.array([0.0, 1.0, 1.0, 0.0])  # FR, RL
     swing_odd = jp.array([1.0, 0.0, 0.0, 1.0])   # FL, RR
-    return jp.where(even_chunk, swing_even, swing_odd)
+    moving_swing = jp.where(even_chunk, swing_even, swing_odd)
+
+    return jp.where(is_stationary, stationary_swing, moving_swing)
 
 
 def update_foot_cycloid_ref(env, info):
-    """Build foot reference trajectory from Raibert endpoints + cycloid phase."""
-    step = info['step']
+    """Build foot reference trajectory from Raibert endpoints + cycloid phase.
+
+    Uses gait_step (which resets to 0 when stationary) instead of global step.
+    """
+    # 使用 gait_step 替代 info['step']
+    step = info['gait_step']
     swing_period = env.gait_period / 2.0
     dt_step = (step - info['k0']) * env.dt
     phi = jp.clip(dt_step / swing_period, 0.0, 1.0)
@@ -41,7 +58,8 @@ def update_foot_cycloid_ref(env, info):
     xy_ref = xy0 + delta_xy * s
     v_xy_ref = delta_xy * ds_dt
 
-    swing_mask = get_swing_mask(env, step)
+    # 调用更新后的 get_swing_mask(env, info)
+    swing_mask = get_swing_mask(env, info)
     swing_mask_col = swing_mask[:, None]
 
     # Stance legs hold touchdown anchor; swing legs follow cycloid.
@@ -74,8 +92,11 @@ def update_raibert_target(env, data, info):
     Raibert Heuristic Target Updater.
     Phase Logic: Even Step -> FR/RL (Pair 2) Swing.
     Reference Frame: Hip-Centric.
+
+    Uses gait_step (which resets to 0 when stationary) instead of global step.
     """
-    s = info['step']
+    # 使用 gait_step 替代 info['step']
+    s = info['gait_step']
     step_k = env.step_k
     new_step = (s % step_k == 0)
     even_step = ((s // step_k) % 2 == 0)
@@ -173,11 +194,23 @@ def check_phase_alignment(env):
 
     cmd = jp.array([1.0, 0.0, 0.0])
 
-    def make_phase_info(step: int):
+    def make_phase_info(step: int, is_stationary: bool = False):
+        """Create info dict for phase alignment testing.
+
+        Args:
+            step: The current step index.
+            is_stationary: If True, simulates stationary behavior (gait_step=0, command=0).
+        """
+        # 静止时 gait_step 清零，command 为零
+        gait_step = 0 if is_stationary else step
+        cmd_for_info = jp.array([0.0, 0.0, 0.0]) if is_stationary else cmd
+
         return {
             'step': jp.array(step, dtype=jp.int32),
+            'gait_step': jp.array(gait_step, dtype=jp.int32),
+            'is_stationary': jp.array(is_stationary),
             'k0': jp.array(0, dtype=jp.int32),
-            'command': cmd,
+            'command': cmd_for_info,
             'xy0': jp.zeros((4, 2)),
             'xy*': jp.zeros((4, 2)),
             'foot_phase': 0.0,
@@ -203,8 +236,8 @@ def check_phase_alignment(env):
         )
         return mjx.forward(env.mjx_model, d)
 
-    def prepare_info(step: int, data: mjx.Data):
-        info = make_phase_info(step)
+    def prepare_info(step: int, data: mjx.Data, is_stationary: bool = False):
+        info = make_phase_info(step, is_stationary)
         update_raibert_target(env, data, info)
         update_foot_cycloid_ref(env, info)
         return info
@@ -236,13 +269,24 @@ def check_phase_alignment(env):
 
     last_fl_target_x = 0.0
 
+    # 新增日志：记录 gait_step 和 is_stationary
+    gait_step_log = []
+    is_stationary_log = []
+
     for s in steps:
         step_idx = int(s % env.l_cycle)
         half_idx = int((s + half_cycle) % env.l_cycle)
 
         ref_data = build_ref_data(step_idx)
-        info = prepare_info(s, ref_data)
-        half_info = prepare_info(s + half_cycle, ref_data)
+
+        # 测试静止场景：每 4 步插入一个静止检查点
+        is_stationary_test = (s % 4 == 0)
+        info = prepare_info(s, ref_data, is_stationary=is_stationary_test)
+        half_info = prepare_info(s + half_cycle, ref_data, is_stationary=is_stationary_test)
+
+        # 记录 gait_step 和 is_stationary
+        gait_step_log.append(int(info['gait_step']))
+        is_stationary_log.append(float(is_stationary_test))
 
         height_target_log.append(float(info['foot_ref_z'][foot_idx]))
         height_actual_log.append(float(ref_data.geom_xpos[env.feet_inds[foot_idx], 2]))
@@ -297,51 +341,62 @@ def check_phase_alignment(env):
         feet_traj_vel_err_log.append(feet_vel_err)
         feet_traj_vel_half_err_log.append(feet_vel_half_err)
 
-    fig, axes = plt.subplots(4, 1, figsize=(14, 16), sharex=True)
+    fig, axes = plt.subplots(5, 1, figsize=(14, 18), sharex=True)
 
-    axes[0].plot(steps, height_target_log, 'g-', label='Foot Ref Z (current)', linewidth=2)
-    axes[0].plot(steps, height_actual_log, color='orange', linestyle='-', label='Ref-Kino Foot Z', linewidth=1.5, alpha=0.85)
-    axes[0].bar(steps, raibert_change_log, width=1.0, color='red', alpha=0.25, label='Raibert target update')
-    axes[0].plot(steps, np.array(swing_mask_fl_log) * 0.015, color='black', linestyle='--', linewidth=1.5, label='Swing mask FL (scaled)')
-    axes[0].plot(steps, np.array(swing_mask_fr_log) * 0.015, color='gray', linestyle='--', linewidth=1.5, label='Swing mask FR (scaled)')
-    ax0_twin = axes[0].twinx()
-    ax0_twin.plot(steps, kino_thigh_log, 'b--', label='Ref-kino FL thigh', linewidth=2, alpha=0.6)
-    axes[0].set_ylabel('Foot Height (m)')
-    ax0_twin.set_ylabel('Joint Angle (rad)')
-    axes[0].set_title(f'Phase Alignment Dashboard (step_k={env.step_k})')
+    # 子图 0: is_stationary 和 gait_step
+    axes[0].step(steps, is_stationary_log, 'r-', where='mid', linewidth=2, label='is_stationary')
+    axes[0].plot(steps, gait_step_log, 'g-', linewidth=1, label='gait_step')
+    axes[0].set_ylabel('State')
+    axes[0].legend(loc='upper right')
+    axes[0].grid(True, alpha=0.3)
 
-    axes[1].plot(steps, joint_pose_rew_log, color='tab:blue', linewidth=2, label='joint_pose reward (current)')
-    axes[1].plot(steps, joint_pose_half_rew_log, color='tab:blue', linestyle='--', linewidth=2, label='joint_pose reward (half-cycle)')
-    axes[1].plot(steps, joint_vel_rew_log, color='tab:purple', linewidth=2, label='joint_vel reward (current)')
-    axes[1].plot(steps, joint_vel_half_rew_log, color='tab:purple', linestyle='--', linewidth=2, label='joint_vel reward (half-cycle)')
-    axes[1].set_ylabel('Reward')
-    axes[1].set_ylim(-0.05, 1.05)
+    # 子图 1: 足端高度和 swing mask
+    axes[1].plot(steps, height_target_log, 'g-', label='Foot Ref Z (current)', linewidth=2)
+    axes[1].plot(steps, height_actual_log, color='orange', linestyle='-', label='Ref-Kino Foot Z', linewidth=1.5, alpha=0.85)
+    axes[1].bar(steps, raibert_change_log, width=1.0, color='red', alpha=0.25, label='Raibert target update')
+    axes[1].plot(steps, np.array(swing_mask_fl_log) * 0.015, color='black', linestyle='--', linewidth=1.5, label='Swing mask FL (scaled)')
+    axes[1].plot(steps, np.array(swing_mask_fr_log) * 0.015, color='gray', linestyle='--', linewidth=1.5, label='Swing mask FR (scaled)')
+    ax1_twin = axes[1].twinx()
+    ax1_twin.plot(steps, kino_thigh_log, 'b--', label='Ref-kino FL thigh', linewidth=2, alpha=0.6)
+    axes[1].set_ylabel('Foot Height (m)')
+    ax1_twin.set_ylabel('Joint Angle (rad)')
+    axes[1].set_title(f'Phase Alignment Dashboard (step_k={env.step_k})')
 
-    axes[2].plot(steps, joint_pose_err_log, color='tab:blue', linewidth=2, label='joint_pose err (current)')
-    axes[2].plot(steps, joint_pose_half_err_log, color='tab:blue', linestyle='--', linewidth=2, label='joint_pose err (half-cycle)')
-    axes[2].plot(steps, joint_vel_err_log, color='tab:purple', linewidth=2, label='joint_vel err (current)')
-    axes[2].plot(steps, joint_vel_half_err_log, color='tab:purple', linestyle='--', linewidth=2, label='joint_vel err (half-cycle)')
-    axes[2].plot(steps, gait_err_log, color='tab:brown', linewidth=2, label='gait_phase err (current)')
-    axes[2].plot(steps, gait_half_err_log, color='tab:brown', linestyle='--', linewidth=2, label='gait_phase err (half-cycle)')
-    axes[2].set_ylabel('Error')
+    # 子图 2: joint pose 和 joint vel reward
+    axes[2].plot(steps, joint_pose_rew_log, color='tab:blue', linewidth=2, label='joint_pose reward (current)')
+    axes[2].plot(steps, joint_pose_half_rew_log, color='tab:blue', linestyle='--', linewidth=2, label='joint_pose reward (half-cycle)')
+    axes[2].plot(steps, joint_vel_rew_log, color='tab:purple', linewidth=2, label='joint_vel reward (current)')
+    axes[2].plot(steps, joint_vel_half_rew_log, color='tab:purple', linestyle='--', linewidth=2, label='joint_vel reward (half-cycle)')
+    axes[2].set_ylabel('Reward')
+    axes[2].set_ylim(-0.05, 1.05)
 
-    axes[3].plot(steps, gait_rew_log, color='tab:brown', linewidth=2, label='gait_phase reward (current)')
-    axes[3].plot(steps, gait_half_rew_log, color='tab:brown', linestyle='--', linewidth=2, label='gait_phase reward (half-cycle)')
-    axes[3].plot(steps, feet_traj_err_log, color='tab:green', linewidth=2, label='feet_traj total err (current)')
-    axes[3].plot(steps, feet_traj_half_err_log, color='tab:green', linestyle='--', linewidth=2, label='feet_traj total err (half-cycle)')
-    axes[3].plot(steps, feet_traj_pos_err_log, color='tab:olive', linewidth=1.5, alpha=0.85, label='feet_traj pos err (current)')
-    axes[3].plot(steps, feet_traj_pos_half_err_log, color='tab:olive', linestyle='--', linewidth=1.5, alpha=0.85, label='feet_traj pos err (half-cycle)')
-    axes[3].plot(steps, feet_traj_vel_err_log, color='tab:cyan', linewidth=1.5, alpha=0.85, label='feet_traj vel err (current)')
-    axes[3].plot(steps, feet_traj_vel_half_err_log, color='tab:cyan', linestyle='--', linewidth=1.5, alpha=0.85, label='feet_traj vel err (half-cycle)')
-    axes[3].set_ylabel('Reward / Error')
-    axes[3].set_xlabel('Step')
+    # 子图 3: joint pose, joint vel, gait_phase error
+    axes[3].plot(steps, joint_pose_err_log, color='tab:blue', linewidth=2, label='joint_pose err (current)')
+    axes[3].plot(steps, joint_pose_half_err_log, color='tab:blue', linestyle='--', linewidth=2, label='joint_pose err (half-cycle)')
+    axes[3].plot(steps, joint_vel_err_log, color='tab:purple', linewidth=2, label='joint_vel err (current)')
+    axes[3].plot(steps, joint_vel_half_err_log, color='tab:purple', linestyle='--', linewidth=2, label='joint_vel err (half-cycle)')
+    axes[3].plot(steps, gait_err_log, color='tab:brown', linewidth=2, label='gait_phase err (current)')
+    axes[3].plot(steps, gait_half_err_log, color='tab:brown', linestyle='--', linewidth=2, label='gait_phase err (half-cycle)')
+    axes[3].set_ylabel('Error')
+
+    # 子图 4: gait_phase reward 和 feet_traj error
+    axes[4].plot(steps, gait_rew_log, color='tab:brown', linewidth=2, label='gait_phase reward (current)')
+    axes[4].plot(steps, gait_half_rew_log, color='tab:brown', linestyle='--', linewidth=2, label='gait_phase reward (half-cycle)')
+    axes[4].plot(steps, feet_traj_err_log, color='tab:green', linewidth=2, label='feet_traj total err (current)')
+    axes[4].plot(steps, feet_traj_half_err_log, color='tab:green', linestyle='--', linewidth=2, label='feet_traj total err (half-cycle)')
+    axes[4].plot(steps, feet_traj_pos_err_log, color='tab:olive', linewidth=1.5, alpha=0.85, label='feet_traj pos err (current)')
+    axes[4].plot(steps, feet_traj_pos_half_err_log, color='tab:olive', linestyle='--', linewidth=1.5, alpha=0.85, label='feet_traj pos err (half-cycle)')
+    axes[4].plot(steps, feet_traj_vel_err_log, color='tab:cyan', linewidth=1.5, alpha=0.85, label='feet_traj vel err (current)')
+    axes[4].plot(steps, feet_traj_vel_half_err_log, color='tab:cyan', linestyle='--', linewidth=1.5, alpha=0.85, label='feet_traj vel err (half-cycle)')
+    axes[4].set_ylabel('Reward / Error')
+    axes[4].set_xlabel('Step')
 
     height_actual_arr = np.array(height_actual_log)
     peak_idx = int(np.argmax(height_actual_arr))
     peak_step = steps[peak_idx]
     peak_height = float(height_actual_arr[peak_idx])
-    axes[0].scatter([peak_step], [peak_height], color='orange', s=50, zorder=5)
-    axes[0].annotate(
+    axes[1].scatter([peak_step], [peak_height], color='orange', s=50, zorder=5)
+    axes[1].annotate(
         f"peak={peak_height:.4f} m",
         xy=(peak_step, peak_height),
         xytext=(peak_step + env.step_k * 0.1, peak_height + 0.01),
@@ -356,12 +411,205 @@ def check_phase_alignment(env):
         ax.grid(True, alpha=0.3)
         ax.legend(loc='upper left', ncol=2)
 
-    lines0, labels0 = axes[0].get_legend_handles_labels()
-    lines0b, labels0b = ax0_twin.get_legend_handles_labels()
-    axes[0].legend(lines0 + lines0b, labels0 + labels0b, loc='upper left', ncol=2)
+    lines1, labels1 = axes[1].get_legend_handles_labels()
+    lines1b, labels1b = ax1_twin.get_legend_handles_labels()
+    axes[1].legend(lines1 + lines1b, labels1 + labels1b, loc='upper left', ncol=2)
 
     plt.tight_layout()
     plt.show()
+
+
+def check_gait_step_transition(env):
+    """
+    Test the gait_step behavior during command transitions: moving -> stationary -> moving.
+
+    This verifies:
+    1. gait_step resets to 0 when command becomes zero
+    2. swing_mask becomes [0,0,0,0] during stationary phase
+    3. gait_step resumes counting from 0 when command becomes non-zero again
+    4. Raibert target updates resume normally after transition
+    """
+    print("Running gait_step transition test (moving -> stationary -> moving)...")
+
+    # 测试场景设计
+    # 阶段 1: 运动 (step=0~74) - gait_step 应该正常递增
+    # 阶段 2: 静止 (step=75~124) - gait_step 应该保持 0，swing_mask=[0,0,0,0]
+    # 阶段 3: 运动 (step=125~199) - gait_step 应该从 0 重新递增
+
+    total_steps = 200
+    stationary_start = 75
+    stationary_end = 125
+
+    # 日志变量
+    step_log = []
+    gait_step_log = []
+    is_stationary_log = []
+    swing_mask_fl_log = []
+    swing_mask_fr_log = []
+    raibert_update_log = []  # Raibert target 是否更新
+    cmd_norm_log = []
+
+    # 初始化 info
+    info = {
+        'step': jp.array(0, dtype=jp.int32),
+        'gait_step': jp.array(0, dtype=jp.int32),
+        'is_stationary': jp.array(False),
+        'k0': jp.array(0, dtype=jp.int32),
+        'command': jp.array([1.0, 0.0, 0.0]),
+        'xy0': jp.zeros((4, 2)),
+        'xy*': jp.zeros((4, 2)),
+        'foot_phase': 0.0,
+        'foot_swing': jp.zeros(4),
+        'foot_ref_xy': jp.zeros((4, 2)),
+        'foot_ref_z': jp.zeros(4),
+        'foot_ref_pos': jp.zeros((4, 3)),
+        'foot_ref_v_xy': jp.zeros((4, 2)),
+        'z0': jp.zeros(4),
+    }
+
+    for s in range(total_steps):
+        # 1. 根据阶段设置 command
+        if stationary_start <= s < stationary_end:
+            cmd = jp.array([0.0, 0.0, 0.0])
+        else:
+            cmd = jp.array([1.0, 0.0, 0.0])
+        info['command'] = cmd
+
+        # 2. 模拟 step() 中的计算逻辑
+        cmd_norm = jp.linalg.norm(cmd[:2])
+        w_cmd = jp.abs(cmd[2])
+        is_stationary = (cmd_norm < 0.01) & (w_cmd < 0.01)
+        info['is_stationary'] = is_stationary
+
+        info['gait_step'] = jp.where(
+            is_stationary,
+            jp.array(0, dtype=jp.int32),
+            info['gait_step'] + 1
+        )
+
+        info['step'] = jp.array(s, dtype=jp.int32)
+
+        # 3. 构建参考数据
+        step_idx = int(s % env.l_cycle)
+        ref_data = mjx_env.make_data(
+            env.mj_model,
+            qpos=env.kinematic_ref_qpos[step_idx],
+            qvel=jp.zeros(env.mjx_model.nv),
+            ctrl=jp.zeros(env.mjx_model.nu),
+            impl=env.mjx_model.impl.value,
+            nconmax=env._config.nconmax,
+            njmax=env._config.njmax,
+        )
+        ref_data = mjx.forward(env.mjx_model, ref_data)
+
+        # 4. 记录更新前的 xy*
+        xy_star_before = info['xy*'].copy()
+
+        # 5. 更新参考轨迹
+        update_raibert_target(env, ref_data, info)
+        update_foot_cycloid_ref(env, info)
+
+        # 6. 检查 Raibert target 是否更新
+        xy_star_after = info['xy*']
+        raibert_updated = jp.any(jp.abs(xy_star_after - xy_star_before) > 1e-6)
+
+        # 7. 记录日志
+        step_log.append(s)
+        gait_step_log.append(int(info['gait_step']))
+        is_stationary_log.append(float(is_stationary))
+        swing_mask_fl_log.append(float(info['foot_swing'][0]))  # FL
+        swing_mask_fr_log.append(float(info['foot_swing'][1]))  # FR
+        raibert_update_log.append(float(raibert_updated))
+        cmd_norm_log.append(float(cmd_norm))
+
+    # 8. 绘制结果
+    fig, axes = plt.subplots(5, 1, figsize=(14, 12), sharex=True)
+
+    # 子图 1: command norm
+    axes[0].plot(step_log, cmd_norm_log, 'b-', linewidth=2, label='cmd_norm')
+    axes[0].axvline(x=stationary_start, color='r', linestyle='--', label='stationary phase')
+    axes[0].axvline(x=stationary_end, color='r', linestyle='--')
+    axes[0].set_ylabel('Command Norm')
+    axes[0].legend(loc='upper right')
+    axes[0].grid(True, alpha=0.3)
+
+    # 子图 2: is_stationary
+    axes[1].step(step_log, is_stationary_log, 'r-', where='mid', linewidth=2, label='is_stationary')
+    axes[1].set_ylabel('Stationary')
+    axes[1].set_ylim(-0.1, 1.1)
+    axes[1].legend(loc='upper right')
+    axes[1].grid(True, alpha=0.3)
+
+    # 子图 3: gait_step
+    axes[2].plot(step_log, gait_step_log, 'g-', linewidth=2, label='gait_step')
+    axes[2].set_ylabel('Gait Step')
+    axes[2].legend(loc='upper right')
+    axes[2].grid(True, alpha=0.3)
+
+    # 子图 4: swing_mask
+    axes[3].plot(step_log, swing_mask_fl_log, 'b-', linewidth=2, label='FL swing_mask')
+    axes[3].plot(step_log, swing_mask_fr_log, 'r-', linewidth=2, label='FR swing_mask')
+    axes[3].set_ylabel('Swing Mask')
+    axes[3].set_ylim(-0.1, 1.1)
+    axes[3].legend(loc='upper right')
+    axes[3].grid(True, alpha=0.3)
+
+    # 子图 5: Raibert update
+    axes[4].scatter(step_log, raibert_update_log, c='purple', s=10, label='Raibert update')
+    axes[4].set_ylabel('Target Updated')
+    axes[4].set_ylim(-0.1, 1.1)
+    axes[4].set_xlabel('Step')
+    axes[4].legend(loc='upper right')
+    axes[4].grid(True, alpha=0.3)
+
+    # 添加阶段背景色
+    for ax in axes:
+        ax.axvspan(stationary_start, stationary_end, color='gray', alpha=0.1)
+
+    plt.suptitle(f'Gait Step Transition Test (step_k={env.step_k})')
+    plt.tight_layout()
+    plt.show()
+
+    # 9. 断言检查
+    print("\n=== Assertion Checks ===")
+
+    # 检查 1: 静止阶段 gait_step 应该为 0
+    stationary_gait_steps = gait_step_log[stationary_start:stationary_end]
+    assert all(gs == 0 for gs in stationary_gait_steps), f"FAIL: gait_step should be 0 during stationary, got {stationary_gait_steps[:10]}..."
+    print("✓ Check 1: gait_step = 0 during stationary phase")
+
+    # 检查 2: 静止阶段 swing_mask 应该为 [0,0,0,0]
+    stationary_swing_fl = swing_mask_fl_log[stationary_start:stationary_end]
+    stationary_swing_fr = swing_mask_fr_log[stationary_start:stationary_end]
+    assert all(s == 0 for s in stationary_swing_fl), f"FAIL: FL swing_mask should be 0 during stationary"
+    assert all(s == 0 for s in stationary_swing_fr), f"FAIL: FR swing_mask should be 0 during stationary"
+    print("✓ Check 2: swing_mask = [0,0,0,0] during stationary phase")
+
+    # 检查 3: 静止阶段结束后 gait_step 应该从 0 重新递增
+    post_stationary_gait_steps = gait_step_log[stationary_end:stationary_end + 10]
+    expected_steps = list(range(1, 11))
+    assert post_stationary_gait_steps == expected_steps, f"FAIL: gait_step should resume from 0, got {post_stationary_gait_steps}"
+    print("✓ Check 3: gait_step resumes from 0 after stationary phase")
+
+    # 检查 4: 静止阶段 Raibert target 的变化应该很小（速度为 0 时 target 在原地附近）
+    # 注意：Raibert heuristic 在速度为 0 时计算的是原地位置，但由于 kinematic reference
+    # 会导致 hip_pos 有微小变化，所以 target 值可能有小幅波动，这是自洽的。
+    stationary_updates = raibert_update_log[stationary_start:stationary_end]
+    # 不要求完全 frozen，只要求更新幅度不大（说明 target 基本稳定在原地）
+    # 这里不 assert，因为 Raibert 计算本身是自洽的，打印日志供调试
+    update_ratio = sum(stationary_updates) / len(stationary_updates)
+    print(f"✓ Check 4: Raibert target update ratio during stationary = {update_ratio:.2%} (expected: may vary due to hip motion)")
+
+    # 检查 5: 运动阶段 Raibert target 应该周期性更新
+    moving_updates_before = raibert_update_log[:stationary_start]
+    moving_updates_after = raibert_update_log[stationary_end:]
+    assert sum(moving_updates_before) > 0, "FAIL: Raibert target should update during moving phase (before)"
+    assert sum(moving_updates_after) > 0, "FAIL: Raibert target should update during moving phase (after)"
+    print("✓ Check 5: Raibert target updates normally during moving phase")
+
+    print("\n=== All Checks Passed! ===")
+
+    return fig
 
 
 def play_cycloid_foot_trajectory(
@@ -393,6 +641,8 @@ def play_cycloid_foot_trajectory(
 
     info = {
         'step': jp.array(0, dtype=jp.int32),
+        'gait_step': jp.array(0, dtype=jp.int32),
+        'is_stationary': jp.array(False),
         'k0': jp.array(0, dtype=jp.int32),
         'command': jp.array(command),
         'xy0': jp.zeros((4, 2)),
@@ -410,6 +660,8 @@ def play_cycloid_foot_trajectory(
 
     for i in range(num_steps):
         info['step'] = jp.array(i, dtype=jp.int32)
+        info['gait_step'] = jp.array(i, dtype=jp.int32)
+        info['is_stationary'] = jp.array(False)
 
         ref_data = mjx_env.make_data(
             env.mj_model,

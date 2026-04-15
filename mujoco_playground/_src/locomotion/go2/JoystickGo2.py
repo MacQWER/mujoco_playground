@@ -149,8 +149,8 @@ class JoystickGo2(Go2Env):
         self._init_active_rewards(reward_lib)
 
 
-    def _get_swing_mask(self, step):
-        return joystick_utils.get_swing_mask(self, step)
+    def _get_swing_mask(self, info):
+        return joystick_utils.get_swing_mask(self, info)
 
     def _update_foot_cycloid_ref(self, info):
         joystick_utils.update_foot_cycloid_ref(self, info)
@@ -190,26 +190,42 @@ class JoystickGo2(Go2Env):
 
         cmd = self.command_manager.sample(key_cmd, cmd_a=self._cmd_a, cmd_b=self._cmd_b)
 
+        # 根据命令计算初始静止状态
+        cmd_norm = jp.linalg.norm(cmd[:2])
+        w_cmd = jp.abs(cmd[2])
+        is_stationary = (cmd_norm < 0.01) & (w_cmd < 0.01)
+
+        # 随机化初始相位：0 或 step_k（对应 FR+RL 或 FL+RR 先摆动）
+        rng, key_phase = jax.random.split(rng)
+        initial_chunk = jax.random.randint(key_phase, (), 0, 2, dtype=jp.int32)  # 显式指定 int32
+        initial_gait_step = initial_chunk * self.step_k
+
         hip_pos = data.xpos[self.hip_inds][:, :2]
         feet_pos = data.geom_xpos[self.feet_inds][:, :2]
-        
+
 
         # 初始化 State Info (包含新增变量)
         state_info = {
             'rng': rng,
             'step': jp.array(0, dtype=jp.int32),
-            'last_action': jp.zeros(self.mjx_model.nu), 
-            
+            'last_action': jp.zeros(self.mjx_model.nu),
+
             # --- 新增变量开始 ---
-            'last_residual': jp.zeros(self.mjx_model.nu),      
-            'feet_air_time': jp.zeros(4),                      
-            'last_contact': jp.zeros(4),                       
-            'swing_peak': jp.zeros(4),                         
+            'last_residual': jp.zeros(self.mjx_model.nu),
+            'feet_air_time': jp.zeros(4),
+            'last_contact': jp.zeros(4),
+            'swing_peak': jp.zeros(4),
+            # Raibert 相位计数器（专用于步态相位计算，静止时清零）
+            # 随机化初始相位，解决 FL+RR vs FR+RL 学习不对称问题
+            'gait_step': jp.array(initial_gait_step, dtype=jp.int32),
+            # 静止状态标志（根据初始命令正确计算）
+            'is_stationary': is_stationary,
             # --- 新增变量结束 ---
-            
+
             'xy0': feet_pos,
             'xy*': feet_pos,
-            'k0': jp.array(0, dtype=jp.int32),
+            # k0 与 gait_step 同步，确保 phi=0（相位开始）
+            'k0': jp.array(initial_gait_step, dtype=jp.int32),
             'foot_phase': 0.0,
             'foot_swing': jp.zeros(4),
             'foot_ref_xy': feet_pos,
@@ -304,12 +320,51 @@ class JoystickGo2(Go2Env):
         feet_air_time = info["feet_air_time"] + self.dt
         swing_peak = jp.maximum(info["swing_peak"], foot_z)
 
-        # 4. Advance gait-phase references for this transition reward.
-        self._update_raibert_target(data, info)
+        # 4. 【新增】计算 is_stationary 并更新 gait_step
+        cmd_norm = jp.linalg.norm(info['command'][:2])
+        w_cmd = jp.abs(info['command'][2])
+        was_stationary = info['is_stationary']  # 保存上一帧状态
+        is_stationary = (cmd_norm < 0.01) & (w_cmd < 0.01)
+        info['is_stationary'] = is_stationary
+
+        # 检测状态转换：静止 -> 运动
+        resuming_motion = (~is_stationary) & was_stationary
+
+        # 根据配置决定是否随机化相位
+        if getattr(self._config.env, 'randomize_gait_phase_on_resume', False):
+            # 训练模式：从静止恢复时随机选择 0 或 step_k
+            rng, key_phase = jax.random.split(info['rng'])
+            random_chunk = jax.random.randint(key_phase, (), 0, 2, dtype=jp.int32)  # 显式指定 int32
+            random_gait_step = random_chunk * self.step_k
+
+            info['gait_step'] = jp.where(
+                is_stationary,
+                jp.array(0, dtype=jp.int32),
+                jp.where(
+                    resuming_motion,
+                    random_gait_step,  # 恢复时随机化
+                    info['gait_step'] + 1  # 正常递增
+                )
+            )
+            # 恢复时同步更新 k0
+            info['k0'] = jp.where(resuming_motion, info['gait_step'], info['k0'])
+            info['rng'] = rng
+        else:
+            # 评估模式：保持原有逻辑
+            info['gait_step'] = jp.where(
+                is_stationary,
+                jp.array(0, dtype=jp.int32),
+                info['gait_step'] + 1
+            )
+
+        # 5. 【时序修正】step 递增提前
         info['step'] += 1
+
+        # 6. 更新参考轨迹（使用 step=t+1, gait_step, is_stationary）
+        self._update_raibert_target(data, info)
         self._update_foot_cycloid_ref(info)
 
-        # 5. Reward and termination use the transition state plus pre-step action history.
+        # 7. Reward and termination use the transition state plus pre-step action history.
         up_z = self.get_upvector(data)[-1]
         tilt_threshold = jp.cos(jp.deg2rad(45.0))
         fall_termination = up_z < tilt_threshold
@@ -324,7 +379,7 @@ class JoystickGo2(Go2Env):
         reward_dict = self._get_reward(data, ctrl, info, reward_kwargs, done)
         reward = self._sum_reward_dict(reward_dict, self.dt)
 
-        # 6. Commit post-step history for the next observation / next action.
+        # 8. Commit post-step history for the next observation / next action.
         info["feet_air_time"] = feet_air_time * (1.0 - contact)
         info["last_contact"] = contact
         info["swing_peak"] = swing_peak * (1.0 - contact)
@@ -361,7 +416,7 @@ class JoystickGo2(Go2Env):
         state.metrics["assist_torque_norm"] = info["assist_torque_norm"]
         info['reward_tuple'] = reward_dict
 
-        # 7. Next observation.
+        # 9. Next observation.
         residual_obs = self._get_residual_obs(data, info)
 
         return self._finalize_step(
@@ -410,11 +465,10 @@ class JoystickGo2(Go2Env):
     ) -> dict[str, Any]:
         del data
 
-        # Keep masks behavior unchanged for now.
-        # move_mask = jax.nn.sigmoid((jp.linalg.norm(info['command']) - 0.01) * 200.0)
-        # still_mask = jax.nn.sigmoid((0.01 - jp.linalg.norm(info['command'])) * 200.0)
-        move_mask = 1.0
-        still_mask = 0.0
+        # 直接使用 info['is_stationary']，无需重复计算
+        is_stationary = info['is_stationary']
+        move_mask = 1.0 - is_stationary.astype(jp.float32)
+        still_mask = is_stationary.astype(jp.float32)
 
         reward_kwargs = dict(extra_args)
         reward_kwargs.update(
@@ -438,6 +492,10 @@ class JoystickGo2(Go2Env):
 
     def check_phase_alignment(self):
         return joystick_utils.check_phase_alignment(self)
+
+    def check_gait_step_transition(self):
+        """Test gait_step behavior during command transitions."""
+        return joystick_utils.check_gait_step_transition(self)
 
     def play_cycloid_foot_trajectory(
         self,

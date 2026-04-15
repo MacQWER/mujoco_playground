@@ -52,6 +52,7 @@ OBS_JOINT_VELS_DIM = 12
 OBS_LAST_ACTION_DIM = 12
 OBS_KIN_REF_DIM = 12
 OBS_ANCHOR_ACTION_DIM = 12
+OBS_GAIT_PHASE_DIM = 2  # 新增：相位编码 [sin, cos]
 
 OBS_W_LOCAL_SLICE = slice(0, 3)
 OBS_G_LOCAL_SLICE = slice(3, 6)
@@ -61,9 +62,10 @@ OBS_JOINT_VELS_SLICE = slice(21, 33)
 OBS_LAST_ACTION_SLICE = slice(33, 45)
 OBS_KIN_REF_SLICE = slice(45, 57)
 OBS_ANCHOR_ACTION_SLICE = slice(57, 69)
+OBS_GAIT_PHASE_SLICE = slice(69, 71)  # 新增：gait_phase 观测位置
 
 # Anchor Policy 相关常量
-ANCHOR_OBS_DIM = OBS_ANCHOR_ACTION_SLICE.stop
+ANCHOR_OBS_DIM = OBS_GAIT_PHASE_SLICE.stop  # 更新：69 -> 71
 ANCHOR_ACT_DIM = 12
 ANCHOR_PATH = None
 # ANCHOR_PATH = '/data/mujoco_playground/mujoco_playground/experimental/learning/checkpoints/Go2Trot-20260320-100219/trotting_apg_2_hz_policy.pkl'

@@ -86,7 +86,7 @@ def brax_apg_config(
         hidden_layer_sizes=(512, 256, 128),
         policy_obs_key="state",
     )
-  elif env_name in ("Go2Joystick2"):
+  elif env_name in ("Go2Joystick2", "Go2JoystickMujoco", "Go2AlignmentEnv"):
     rl_config.episode_length=240
     rl_config.policy_updates=256
     rl_config.horizon_length=64
@@ -106,8 +106,8 @@ def brax_apg_config(
         policy_obs_key="state",
     )
     # Symmetry loss for JoystickGo2 residual policy.
-    # Obs layout (69): w(3), g(3), cmd(3), qpos(12), qvel(12),
-    # last_action(12), kin_ref(12), anchor_action(12)
+    # Obs layout (71): w(3), g(3), cmd(3), qpos(12), qvel(12),
+    # last_action(12), kin_ref(12), anchor_action(12), gait_phase(2)
     # Action layout (12): [FL, FR, RL, RR] x [hip, thigh, calf]
     # Signed permutation encoding:
     #   new[i] = sign(perm[i]) * old[floor(abs(perm[i]) + 1e-3)]
@@ -150,6 +150,10 @@ def brax_apg_config(
       -57.0,     58.0,  59.0,     # [60-62] anchor_action FR <- FL
       -66.0,     67.0,  68.0,     # [63-65] anchor_action RL <- RR
       -63.0,     64.0,  65.0,     # [66-68] anchor_action RR <- RL
+
+        # 69-70: gait_phase [sin(θ), cos(θ)]
+        # Mirror symmetry: θ -> -θ, so sin(-θ)=-sin(θ), cos(-θ)=cos(θ)
+      -69.0,     70.0,            # [69-70] gait_phase (-sin, cos)
     )
     rl_config.act_permutation = (
       -3.0, 4.0, 5.0,         # FL <- FR

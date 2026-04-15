@@ -56,7 +56,31 @@ def zero_anchor_action(data, info, **kwargs) -> jax.Array:
     return jp.zeros(12)
 
 def kinematic_reference(data, info, **kwargs) -> jax.Array:
-    """获取当前步态相位的运动学参考位姿"""
+    """获取当前步态相位的运动学参考位姿
+
+    Uses gait_step (which resets to 0 when stationary) instead of global step.
+    When stationary, reference pose stays at the initial pose (index 0).
+    """
     l_cycle = kwargs['l_cycle']
-    step_idx = jp.array(info['step'] % l_cycle, int)
+    step_idx = jp.array(info['gait_step'] % l_cycle, int)
     return kwargs['kin_ref_qpos'][step_idx][7:]
+
+
+def gait_phase(data, info, **kwargs) -> jax.Array:
+    """步态相位循环编码 [sin(θ), cos(θ)]
+
+    解决观测歧义：让策略明确知道当前步态相位，
+    消除 kinematic_reference 在不同相位返回相同值的歧义。
+
+    静止时返回 [0, 0] 作为特殊标记。
+    """
+    l_cycle = kwargs['l_cycle']
+    is_stationary = info.get('is_stationary', False)
+
+    # 运动时使用 gait_step，静止时返回特殊标记
+    step = info['gait_step']
+    phase = 2.0 * jp.pi * step / l_cycle
+    phase_enc = jp.array([jp.sin(phase), jp.cos(phase)])
+
+    # 静止时返回 [0, 0]
+    return jp.where(is_stationary, jp.zeros(2), phase_enc)
