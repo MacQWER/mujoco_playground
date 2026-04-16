@@ -13,3 +13,4 @@ mujoco_playground/experimental/learning/check_points/
 .vscode/
 *.pkl
 *.log
+*.claude
