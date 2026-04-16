@@ -20,6 +20,9 @@ def default_config() -> config_dict.ConfigDict:
     cfg.env.foot_traj_vel_weight = 0.2
     # 训练时从静止恢复是否随机化相位（默认False，训练时设为True解决FL/RR vs FR/RL不对称）
     cfg.env.randomize_gait_phase_on_resume = False
+    # is_stationary 判断阈值：线速度和角速度阈值
+    cfg.env.stationary_cmd_threshold = 0.01
+    cfg.env.stationary_w_cmd_threshold = 0.05
 
     # obs config
     cfg.obs = config_dict.ConfigDict()

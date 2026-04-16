@@ -193,7 +193,7 @@ class JoystickGo2(Go2Env):
         # 根据命令计算初始静止状态
         cmd_norm = jp.linalg.norm(cmd[:2])
         w_cmd = jp.abs(cmd[2])
-        is_stationary = (cmd_norm < 0.01) & (w_cmd < 0.01)
+        is_stationary = (cmd_norm < self._config.env.stationary_cmd_threshold) & (w_cmd < self._config.env.stationary_w_cmd_threshold)
 
         # 随机化初始相位：0 或 step_k（对应 FR+RL 或 FL+RR 先摆动）
         rng, key_phase = jax.random.split(rng)
@@ -324,7 +324,7 @@ class JoystickGo2(Go2Env):
         cmd_norm = jp.linalg.norm(info['command'][:2])
         w_cmd = jp.abs(info['command'][2])
         was_stationary = info['is_stationary']  # 保存上一帧状态
-        is_stationary = (cmd_norm < 0.01) & (w_cmd < 0.01)
+        is_stationary = (cmd_norm < self._config.env.stationary_cmd_threshold) & (w_cmd < self._config.env.stationary_w_cmd_threshold)
         info['is_stationary'] = is_stationary
 
         # 检测状态转换：静止 -> 运动
