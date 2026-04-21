@@ -74,7 +74,7 @@ class JoystickGo2(Go2Env):
 
         # 3. 获取足端传感器 (新增，适配 *_sensor.xml)
         self._feet_site_id = np.array([self._mj_model.site(name).id for name in consts.FEET_SITES])
-        
+
         foot_linvel_sensor_adr = []
         try:
             for site in consts.FEET_SITES:
@@ -85,6 +85,21 @@ class JoystickGo2(Go2Env):
             self._foot_linvel_sensor_adr = jp.array(foot_linvel_sensor_adr)
         except Exception:
             self._foot_linvel_sensor_adr = None
+
+        # 3b. 获取足端接触力传感器 ID (新增)
+        self._foot_force_sensor_adr = []
+        self._foot_force_sensor_dim = []
+        for geom in consts.FEET_GEOMS:
+            try:
+                sensor_id = self._mj_model.sensor(f"{geom}_force").id
+                sensor_adr = self._mj_model.sensor_adr[sensor_id]
+                sensor_dim = self._mj_model.sensor_dim[sensor_id]
+                self._foot_force_sensor_adr.append(sensor_adr)
+                self._foot_force_sensor_dim.append(sensor_dim)
+            except KeyError:
+                # 传感器不存在时设置为 None
+                self._foot_force_sensor_adr.append(None)
+                self._foot_force_sensor_dim.append(None)
 
         # 4. 步态参数
         step_k = int(getattr(self._config.env, "step_k", 25))
@@ -154,6 +169,24 @@ class JoystickGo2(Go2Env):
 
     def _update_foot_cycloid_ref(self, info):
         joystick_utils.update_foot_cycloid_ref(self, info)
+
+    def get_foot_contact_forces(self, data: mjx.Data) -> jax.Array:
+        """
+        Get 3D contact forces for each foot from force sensors.
+
+        Returns:
+            jax.Array of shape (4, 3) with contact forces [FL, FR, RL, RR] x [Fx, Fy, Fz]
+            Returns None if force sensors are not configured.
+        """
+        forces = []
+        for i, (adr, dim) in enumerate(zip(self._foot_force_sensor_adr, self._foot_force_sensor_dim)):
+            if adr is not None and dim is not None:
+                force = data.sensordata[adr : adr + dim]
+                forces.append(force)
+            else:
+                # 传感器未配置时返回零
+                forces.append(jp.zeros(3))
+        return jp.stack(forces)
 
     # -------- Reset --------
     def reset(self, rng: jax.Array) -> mjx_env.State:

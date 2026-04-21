@@ -86,7 +86,7 @@ def brax_apg_config(
         hidden_layer_sizes=(512, 256, 128),
         policy_obs_key="state",
     )
-  elif env_name in ("Go2Joystick2", "Go2JoystickMujoco", "Go2AlignmentEnv"):
+  elif env_name in ("Go2Joystick2",):
     rl_config.episode_length=240
     rl_config.policy_updates=256
     rl_config.horizon_length=64
@@ -350,7 +350,42 @@ def brax_ppo_config(
         value_obs_key="state",
     )
 
-  
+  elif env_name in ("Go2Joystick2",):
+    # Match APG's training schedule for fair comparison
+    # APG: policy_updates=256, horizon_length=64, num_envs=256
+    # Total steps = 256 * 64 * 256 = 4,194,304
+    # Eval every 65,536 steps (4194304 / 64 intervals)
+    rl_config.num_timesteps = 4_194_304 * 4
+    rl_config.num_evals = 65  # 64 intervals + 1 initial eval
+    rl_config.num_eval_envs = 64  # Match APG's num_eval_envs
+    rl_config.num_resets_per_eval = 0  # Disable extra resets between evals
+    rl_config.reward_scaling = 10.0
+    rl_config.episode_length = 240
+    rl_config.normalize_observations = True  # Match APG
+    rl_config.deterministic_eval = True  # Match APG
+    rl_config.action_repeat = 1
+    rl_config.unroll_length = 64  # Match APG's horizon_length
+    rl_config.num_minibatches = 8
+    rl_config.num_updates_per_batch = 8
+    rl_config.discounting = 0.97
+    rl_config.learning_rate = 1e-4  # Match APG
+    rl_config.entropy_cost = 1e-4  # Match APG
+    rl_config.num_envs = 256  # Match APG
+    rl_config.batch_size = 32  # 32 × 8 = 256 = num_envs, for correct Brax step calculation
+
+    # rl_config.num_timesteps = 20_000_000
+    # rl_config.num_evals = 20
+    # rl_config.deterministic_eval = True
+    # rl_config.num_resets_per_eval = 0
+
+    rl_config.network_factory = config_dict.create(
+        policy_hidden_layer_sizes=(256, 128),  # Match APG
+        value_hidden_layer_sizes=(512, 256, 128),
+        policy_obs_key="state",
+        value_obs_key="state",
+    )
+
+
   elif env_name in (
       "BarkourJoystick",
       "H1InplaceGaitTracking",

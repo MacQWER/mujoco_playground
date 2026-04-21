@@ -29,11 +29,22 @@ from etils import epath
 from flax.training import orbax_utils
 from orbax import checkpoint as ocp
 import jax
+from jax import config
 import jax.numpy as jp
 
 # JAX configuration
 jax.config.update("jax_enable_x64", True)
 jax.config.update("jax_default_matmul_precision", "high")
+
+# Compilation cache configuration
+cache_path = "/data/jit_cache"
+if not os.path.exists(cache_path):
+    os.makedirs(cache_path)
+    print(f"Created JAX compilation cache directory at {cache_path}")
+
+config.update("jax_compilation_cache_dir", cache_path)
+config.update("jax_persistent_cache_min_entry_size_bytes", -1)
+config.update("jax_persistent_cache_min_compile_time_secs", 1)
 
 # Set Mujoco to use EGL (must be set before importing mujoco)
 os.environ["MUJOCO_GL"] = "egl"
@@ -329,22 +340,30 @@ def main(argv):
 
     times = [time.monotonic()]
 
+    # # Calculate scale factor to convert policy update count to environment steps
+    # updates_per_epoch = round(apg_params.policy_updates / max(apg_params.num_evals - 1, 1))
+    # scale_it = updates_per_epoch * apg_params.horizon_length * apg_params.num_envs
+
     # Progress function for logging
     def progress(num_steps, metrics):
         times.append(time.monotonic())
 
+        # Convert to actual environment steps
+        # env_steps = num_steps * scale_it
+        env_steps = num_steps
+
         # Log to Weights & Biases
         if _USE_WANDB.value and not _PLAY_ONLY.value:
-            wandb.log(metrics, step=num_steps)
+            wandb.log(metrics, step=env_steps)
 
         # Log to TensorBoard
         if _USE_TB.value and not _PLAY_ONLY.value:
             for key, value in metrics.items():
-                writer.add_scalar(key, value, num_steps)
+                writer.add_scalar(key, value, env_steps)
             writer.flush()
 
         if _NUM_EVALS.value > 1:
-            print(f"{num_steps}: reward={metrics.get('eval/iqm_episode_reward', 'N/A'):.3f}")
+            print(f"{env_steps}: reward={metrics.get('eval/episode_reward', 'N/A'):.3f}")
 
     # Load environment with optional config overrides
     def apply_cfg_overrides(base_cfg, overrides_json):
@@ -407,7 +426,7 @@ def main(argv):
             save_args = orbax_utils.save_args_from_target(params)
             path = ckpt_path / f"{current_step}"
             orbax_checkpointer.save(path, params, force=True, save_args=save_args)
-            print(f"Saved checkpoint at step {current_step}")
+            # print(f"Saved checkpoint at step {current_step}")
 
         policy_params_fn = policy_params_fn_checkpoint
     else:

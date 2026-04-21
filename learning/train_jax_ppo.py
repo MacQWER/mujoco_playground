@@ -14,10 +14,13 @@
 # ==============================================================================
 """Train a PPO agent using JAX on the specified environment."""
 
+# Set Mujoco to use EGL (must be set before importing mujoco or any package that imports mujoco)
+import os
+os.environ["MUJOCO_GL"] = "egl"
+
 import datetime
 import functools
 import json
-import os
 import time
 import warnings
 
@@ -27,9 +30,26 @@ from absl import logging
 from brax.training.agents.ppo import networks as ppo_networks
 from brax.training.agents.ppo import networks_vision as ppo_networks_vision
 from brax.training.agents.ppo import train as ppo
+
 from etils import epath
 import jax
+from jax import config
 import jax.numpy as jp
+
+# JAX configuration (like train_jax_apg.py)
+jax.config.update("jax_enable_x64", True) 
+jax.config.update("jax_default_matmul_precision", "high")
+
+# Compilation cache configuration
+cache_path = "/data/jit_cache"
+if not os.path.exists(cache_path):
+    os.makedirs(cache_path)
+    print(f"Created JAX compilation cache directory at {cache_path}")
+
+config.update("jax_compilation_cache_dir", cache_path)
+config.update("jax_persistent_cache_min_entry_size_bytes", -1)
+config.update("jax_persistent_cache_min_compile_time_secs", 1)
+
 import mediapy as media
 from ml_collections import config_dict
 import mujoco
@@ -47,7 +67,6 @@ xla_flags = os.environ.get("XLA_FLAGS", "")
 xla_flags += " --xla_gpu_triton_gemm_any=True"
 os.environ["XLA_FLAGS"] = xla_flags
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
-os.environ["MUJOCO_GL"] = "egl"
 
 # Ignore the info logs from brax
 logging.set_verbosity(logging.WARNING)
@@ -330,12 +349,10 @@ def main(argv):
       if _VISION.value
       else ppo_networks.make_ppo_networks
   )
-  if hasattr(ppo_params, "network_factory"):
-    network_factory = functools.partial(
-        network_fn, **ppo_params.network_factory
-    )
-  else:
-    network_factory = network_fn
+
+  # Build network_factory kwargs
+  network_factory_kwargs = dict(ppo_params.network_factory) if hasattr(ppo_params, "network_factory") else {}
+  network_factory = functools.partial(network_fn, **network_factory_kwargs) if network_factory_kwargs else network_fn
 
   if _DOMAIN_RANDOMIZATION.value:
     training_params["randomization_fn"] = registry.get_domain_randomizer(
@@ -460,7 +477,10 @@ def main(argv):
         new_info["command"] = cmd
         new_obs = state.obs.copy()
         if "state" in new_obs:
-            new_obs["state"] = new_obs["state"].at[-3:].set(cmd)
+            # Go2Joystick2 obs layout: w(3), g(3), command(3), qpos(12), qvel(12),
+            # last_action(12), kin_ref(12), anchor_action(12), gait_phase(2)
+            # command is at indices 6-9, NOT at the last 3
+            new_obs["state"] = new_obs["state"].at[6:9].set(cmd)
         return state.replace(info=new_info, obs=new_obs)
 
     state = set_cmd(state, target_cmd)
@@ -502,7 +522,7 @@ def main(argv):
   if _VISION.value:
     reset_states = jax.tree_util.tree_map(lambda x: x[0], reset_states)
 
-  target_command = jp.array([1.0, 0.0, 0.0])
+  target_command = jp.array([0.5, 0.0, 0.0])
   batch_commands = jp.tile(target_command, (_NUM_VIDEOS.value, 1))
 
   traj_stacked = jax.jit(jax.vmap(do_rollout))(rng, reset_states, batch_commands)
