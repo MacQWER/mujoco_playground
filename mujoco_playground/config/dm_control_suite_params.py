@@ -56,6 +56,16 @@ def brax_ppo_config(
   elif env_name == "PendulumSwingUp":
     rl_config.action_repeat = 4
     rl_config.num_updates_per_batch = 4
+  elif env_name == "PushBox":
+    rl_config.num_timesteps = 1_000_000
+    rl_config.episode_length = 200
+    rl_config.learning_rate = 1e-3
+    rl_config.num_envs = 256
+    rl_config.batch_size = 64
+    rl_config.num_resets_per_eval = 1
+    rl_config.entropy_cost = 1e-4
+    rl_config.num_updates_per_batch = 8
+    rl_config.reward_scaling = 10.0
 
   return rl_config
 
@@ -132,5 +142,37 @@ def brax_sac_config(
       in ("CheetahRun", "HumanoidWalk", "PendulumSwingUp", "WalkerRun")
   ):
     rl_config.num_timesteps = 10_000_000
+
+  return rl_config
+
+
+def brax_apg_config(
+    env_name: str, unused_impl: Optional[str] = None
+) -> config_dict.ConfigDict:
+  """Returns tuned Brax APG config for the given DM Control Suite environment."""
+  env_config = dm_control_suite.get_default_config(env_name)
+
+  rl_config = config_dict.create(
+      num_evals=10,
+      episode_length=env_config.episode_length,
+      policy_updates=500,
+      horizon_length=32,
+      num_eval_envs=64,
+      use_float64=True,
+      normalize_observations=True,
+      action_repeat=1,
+      learning_rate=3e-4,
+      num_envs=1024,
+      max_gradient_norm=1.0,
+      network_factory=config_dict.create(
+          policy_hidden_layer_sizes=(64, 64),
+          value_hidden_layer_sizes=(64, 64),
+      ),
+  )
+
+  if env_name == "PushBox":
+    rl_config.episode_length = 500
+    rl_config.num_envs = 32
+    rl_config.learning_rate = 1e-3
 
   return rl_config

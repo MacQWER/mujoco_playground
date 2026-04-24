@@ -30,6 +30,7 @@ from mujoco_playground._src.dm_control_suite import hopper
 from mujoco_playground._src.dm_control_suite import humanoid
 from mujoco_playground._src.dm_control_suite import pendulum
 from mujoco_playground._src.dm_control_suite import point_mass
+from mujoco_playground._src.dm_control_suite import pushing
 from mujoco_playground._src.dm_control_suite import reacher
 from mujoco_playground._src.dm_control_suite import swimmer
 from mujoco_playground._src.dm_control_suite import walker
@@ -62,6 +63,7 @@ _envs = {
     "HumanoidRun": partial(humanoid.Humanoid, move_speed=humanoid.RUN_SPEED),
     "PendulumSwingup": pendulum.SwingUp,
     "PointMass": point_mass.PointMass,
+    "PushBox": pushing.PushBox,
     "ReacherEasy": partial(reacher.Reacher, target_size=reacher.BIG_TARGET),
     "ReacherHard": partial(reacher.Reacher, target_size=reacher.SMALL_TARGET),
     "SwimmerSwimmer6": partial(swimmer.Swim, n_links=6),
@@ -91,6 +93,7 @@ _cfgs = {
     "HumanoidWalk": humanoid.default_config,
     "PendulumSwingup": pendulum.default_config,
     "PointMass": point_mass.default_config,
+    "PushBox": pushing.default_config,
     "ReacherEasy": reacher.default_config,
     "ReacherHard": reacher.default_config,
     "SwimmerSwimmer6": swimmer.default_config,
