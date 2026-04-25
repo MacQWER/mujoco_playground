@@ -35,8 +35,8 @@ def default_config() -> config_dict.ConfigDict:
       episode_length=100,
       action_repeat=1,
       impl="jax",
-      nconmax=0,
-      njmax=5,
+      nconmax=4,
+      njmax=20,
       target_x=0.2,
   )
 

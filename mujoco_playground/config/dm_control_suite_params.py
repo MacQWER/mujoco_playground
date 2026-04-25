@@ -66,6 +66,13 @@ def brax_ppo_config(
     rl_config.entropy_cost = 1e-4
     rl_config.num_updates_per_batch = 8
     rl_config.reward_scaling = 10.0
+    rl_config.deterministic_eval=True
+    rl_config.network_factory=config_dict.create(
+          policy_hidden_layer_sizes=(64, 64),
+          value_hidden_layer_sizes=(64, 64, 64),
+          policy_obs_key="state",
+          value_obs_key="state",
+      ),
 
   return rl_config
 
@@ -160,19 +167,30 @@ def brax_apg_config(
       num_eval_envs=64,
       use_float64=True,
       normalize_observations=True,
+      use_mixed_precision=True,
+      deterministic_eval=True,
+      unrollout_length=4,
       action_repeat=1,
       learning_rate=3e-4,
-      num_envs=1024,
+      num_envs=512,
       max_gradient_norm=1.0,
       network_factory=config_dict.create(
-          policy_hidden_layer_sizes=(64, 64),
-          value_hidden_layer_sizes=(64, 64),
+        hidden_layer_sizes=(256, 128),
+        policy_obs_key="state",
       ),
   )
 
   if env_name == "PushBox":
-    rl_config.episode_length = 500
+    rl_config.episode_length = 256
+    rl_config.policy_updates = 64
+    rl_config.horizon_length = 256    
     rl_config.num_envs = 32
-    rl_config.learning_rate = 1e-3
+    rl_config.num_evals = 8
+    rl_config.learning_rate = 3e-4
+    rl_config.use_mixed_precision=True
+    rl_config.unrollout_length=4
+    rl_config.network_factory = config_dict.create(
+        hidden_layer_sizes=(64, 64),
+    )
 
   return rl_config

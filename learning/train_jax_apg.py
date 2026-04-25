@@ -55,6 +55,7 @@ import mujoco
 import mujoco_playground
 from mujoco_playground import registry
 from mujoco_playground import wrapper
+from mujoco_playground.config import dm_control_suite_params
 from mujoco_playground.config import locomotion_params
 import tensorboardX
 import wandb
@@ -181,7 +182,7 @@ def get_rl_config(env_name: str) -> config_dict.ConfigDict:
     elif env_name in mujoco_playground.locomotion._envs:
         return locomotion_params.brax_apg_config(env_name)
     elif env_name in mujoco_playground.dm_control_suite._envs:
-        raise ValueError("APG is not supported for dm_control_suite environments")
+        return dm_control_suite_params.brax_apg_config(env_name)
 
     raise ValueError(f"Env {env_name} not found in {registry.ALL_ENVS}.")
 
