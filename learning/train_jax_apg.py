@@ -37,17 +37,17 @@ jax.config.update("jax_enable_x64", True)
 jax.config.update("jax_default_matmul_precision", "high")
 
 # Compilation cache configuration
-cache_path = "/data/jit_cache"
-if not os.path.exists(cache_path):
-    os.makedirs(cache_path)
-    print(f"Created JAX compilation cache directory at {cache_path}")
+cache_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "jit_cache")
+os.makedirs(cache_path, exist_ok=True)
 
 config.update("jax_compilation_cache_dir", cache_path)
 config.update("jax_persistent_cache_min_entry_size_bytes", -1)
 config.update("jax_persistent_cache_min_compile_time_secs", 1)
 
-# Set Mujoco to use EGL (must be set before importing mujoco)
-os.environ["MUJOCO_GL"] = "egl"
+# Set Mujoco rendering backend (must be set before importing mujoco)
+# Use environment variable if already set, otherwise default to egl
+if "MUJOCO_GL" not in os.environ:
+    os.environ["MUJOCO_GL"] = "egl"
 
 import mediapy as media
 from ml_collections import config_dict

@@ -14,3 +14,5 @@ mujoco_playground/experimental/learning/check_points/
 *.pkl
 *.log
 *.claude
+jit_cache/
+mjplayground/

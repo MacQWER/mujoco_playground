@@ -14,9 +14,10 @@
 # ==============================================================================
 """Train a PPO agent using JAX on the specified environment."""
 
-# Set Mujoco to use EGL (must be set before importing mujoco or any package that imports mujoco)
+# Set Mujoco rendering backend (must be set before importing mujoco)
 import os
-os.environ["MUJOCO_GL"] = "egl"
+if "MUJOCO_GL" not in os.environ:
+    os.environ["MUJOCO_GL"] = "egl"
 
 import datetime
 import functools
@@ -41,10 +42,8 @@ jax.config.update("jax_enable_x64", True)
 jax.config.update("jax_default_matmul_precision", "high")
 
 # Compilation cache configuration
-cache_path = "/data/jit_cache"
-if not os.path.exists(cache_path):
-    os.makedirs(cache_path)
-    print(f"Created JAX compilation cache directory at {cache_path}")
+cache_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "jit_cache")
+os.makedirs(cache_path, exist_ok=True)
 
 config.update("jax_compilation_cache_dir", cache_path)
 config.update("jax_persistent_cache_min_entry_size_bytes", -1)
