@@ -9,7 +9,7 @@ readme = "README.md"
 authors = [
     {name = "Google DeepMind", email = "mujoco@deepmind.com"},
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.11,<3.13"
 dynamic = ["description"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
@@ -17,32 +17,28 @@ classifiers = [
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: Apache Software License",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering",
 ]
+# Version fixed for stability (2026-04-25)
+# Do NOT update unless you verify compatibility with custom Go2 environments
 dependencies = [
-    "brax>=0.12.5",
+    "brax==0.14.0",
     "etils",
     "flax",
-    "jax",
+    "jax==0.9.0",
     "lxml",
     "mediapy",
     "ml_collections",
-    "mujoco-mjx>=3.3.5",
-    "mujoco>=3.3.5",
-    "orbax-checkpoint>=0.11.22",
+    "mujoco-mjx==3.4.0",
+    "mujoco==3.4.0",
+    "orbax-checkpoint==0.11.32",
     "tqdm",
-    "warp-lang>=1.8.1",
+    "warp-lang==1.11.0",
     "wandb",
 ]
 keywords = ["mjx", "mujoco", "sim2real", "reinforcement learning"]
-
-[[tool.uv.index]]
-name = "mujoco"
-url = "https://py.mujoco.org"
-explicit = true
 
 [[tool.uv.index]]
 name = "nvidia"
@@ -50,11 +46,12 @@ url = "https://pypi.nvidia.com"
 explicit = true
 
 [tool.uv.sources]
-mujoco = { index = "mujoco" }
 warp-lang = { index = "nvidia" }
-mujoco-mjx = { git = "https://github.com/google-deepmind/mujoco", rev = "main", subdirectory = "mjx" }
 
 [project.optional-dependencies]
+cuda = [
+    "jax[cuda12]==0.9.0",
+]
 test = [
     "absl-py",
     "dm_control",
