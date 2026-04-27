@@ -52,6 +52,22 @@ python train_jax_apg.py --env_name Go2Joystick2
 
 Train and eval environments can be configured separately via JSON-style overrides:
 
+default parameters:
+
 ```bash
-CUDA_VISIBLE_DEVICES=3 python train_jax_apg.py --env_name Go2Joystick2 --train_env_cfg_overrides '{"env.solimp": [0.015, 1.0, 0.031], "env.solref": [0.02, 1.0]}' --eval_env_cfg_overrides '{"env.solimp": [0.9, 0.95, 0.001], "env.solref": [0.02, 1.0], "env.iterations": 10}' --use_wandb --suffix "apg"
+CUDA_VISIBLE_DEVICES=3 python train_jax_apg.py --env_name Go2Joystick2 --train_env_cfg_overrides '{"env.solimp": [0.015, 1.0, 0.031], "env.solref": [0.02, 1.0]}' --eval_env_cfg_overrides '{"env.solimp": [0.9, 0.95, 0.001], "env.solref": [0.004, 1.0], "env.iterations": 100}' --use_wandb --suffix "apg"
+```
+
+hard parameters:
+
+```bash
+CUDA_VISIBLE_DEVICES=3 python learning/train_jax_apg.py --env_name Go2Joystick2 --train_env_cfg_overrides '{"env.solimp": [0.95, 0.99, 0.001], "env.solref": [0.004, 1.0], "env.iterations": 1}' --eval_env_cfg_overrides '{"env.solimp": [0.95, 0.99, 0.001], "env.solref": [0.004, 1.0], 
+"env.iterations": 100}' --use_wandb --suffix "apg-train-hard-eval-hard"
+```
+
+soft parameters:
+
+```bash
+CUDA_VISIBLE_DEVICES=3 python learning/train_jax_apg.py --env_name Go2Joystick2 --train_env_cfg_overrides '{"env.solimp": [0.015, 0.8, 0.31], "env.solref": [0.02, 1.0], "env.iterations": 1}' --eval_env_cfg_overrides '{"env.solimp": [0.95, 0.99, 0.001], "env.solref": [0.004, 1.0], "e
+nv.iterations": 100}' --use_wandb --suffix "apg-train-soft-eval-hard"
 ```
