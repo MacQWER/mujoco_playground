@@ -24,6 +24,8 @@ def get_env_config() -> config_dict.ConfigDict:
     env = config_dict.ConfigDict()
     env.impratio = 100
     env.iterations = 1
+    env.solimp = [0.015, 1.0, 0.031]
+    env.solref = [0.02, 1.0]
     return env
 
 def get_disturbance_config() -> config_dict.ConfigDict:

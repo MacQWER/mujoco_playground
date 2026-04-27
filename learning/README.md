@@ -41,3 +41,17 @@ python learning/train_rsl_rl.py --env_name LeapCubeReorient --play_only --load_r
 where `run_name` is the name of the run you want to load (will be printed in the console when the training run is started).
 
 Logs and checkpoints are saved in `logs` directory.
+
+## Training with APG
+
+To train with Advantage Policy Gradient (APG):
+
+```bash
+python train_jax_apg.py --env_name Go2Joystick2
+```
+
+Train and eval environments can be configured separately via JSON-style overrides:
+
+```bash
+CUDA_VISIBLE_DEVICES=3 python train_jax_apg.py --env_name Go2Joystick2 --train_env_cfg_overrides '{"env.solimp": [0.015, 1.0, 0.031], "env.solref": [0.02, 1.0]}' --eval_env_cfg_overrides '{"env.solimp": [0.9, 0.95, 0.001], "env.solref": [0.02, 1.0], "env.iterations": 10}' --use_wandb --suffix "apg"
+```
