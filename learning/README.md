@@ -19,6 +19,7 @@ python train_jax_ppo.py --env_name=CartpoleBalance
 ```
 
 To train a vision-based policy using pixel observations:
+
 ```bash
 python train_jax_ppo.py --env_name=CartpoleBalance --vision
 ```
@@ -34,6 +35,7 @@ python train_rsl_rl.py --env_name=LeapCubeReorient
 ```
 
 To render the behaviour from the resulting policy:
+
 ```bash
 python learning/train_rsl_rl.py --env_name LeapCubeReorient --play_only --load_run_name <run_name>
 ```
@@ -61,13 +63,11 @@ CUDA_VISIBLE_DEVICES=3 python train_jax_apg.py --env_name Go2Joystick2 --train_e
 hard parameters:
 
 ```bash
-CUDA_VISIBLE_DEVICES=3 python learning/train_jax_apg.py --env_name Go2Joystick2 --train_env_cfg_overrides '{"env.solimp": [0.95, 0.99, 0.001], "env.solref": [0.004, 1.0], "env.iterations": 1}' --eval_env_cfg_overrides '{"env.solimp": [0.95, 0.99, 0.001], "env.solref": [0.004, 1.0], 
-"env.iterations": 100}' --use_wandb --suffix "apg-train-hard-eval-hard"
+CUDA_VISIBLE_DEVICES=3 python learning/train_jax_apg.py --env_name Go2Joystick2 --train_env_cfg_overrides '{"env.solimp": [0.95, 0.99, 0.001], "env.solref": [0.004, 1.0], "env.iterations": 1}' --eval_env_cfg_overrides '{"env.solimp": [0.95, 0.99, 0.001], "env.solref": [0.004, 1.0], "env.iterations": 100}' --use_wandb --suffix "apg-train-hard-eval-hard"
 ```
 
 soft parameters:
 
 ```bash
-CUDA_VISIBLE_DEVICES=3 python learning/train_jax_apg.py --env_name Go2Joystick2 --train_env_cfg_overrides '{"env.solimp": [0.015, 0.8, 0.31], "env.solref": [0.02, 1.0], "env.iterations": 1}' --eval_env_cfg_overrides '{"env.solimp": [0.95, 0.99, 0.001], "env.solref": [0.004, 1.0], "e
-nv.iterations": 100}' --use_wandb --suffix "apg-train-soft-eval-hard"
+CUDA_VISIBLE_DEVICES=3 python learning/train_jax_apg.py --env_name Go2Joystick2 --train_env_cfg_overrides '{"env.solimp": [0.015, 0.5, 0.31], "env.solref": [0.02, 1.0], "env.iterations": 1}' --eval_env_cfg_overrides '{"env.solimp": [0.95, 0.99, 0.001], "env.solref": [0.004, 1.0], "env.iterations": 100}' --use_wandb --suffix "apg-train-soft-eval-hard"
 ```
