@@ -267,7 +267,7 @@ class JoystickGo2(Go2Env):
             'z0': data.site_xpos[self._feet_site_id][:, 2],
             'foot_ref_v_xy': jp.zeros((4, 2)),
             'anchor_action': jp.zeros(12),
-            'reward_tuple': {k: 0.0 for k in self._config.rewards.scales.keys()}
+            'reward_tuple': {k: 0.0 for k in self.reward_manager.all_term_names}
         }
         state_info = self.command_manager.init_state(
             state_info,

@@ -81,5 +81,4 @@ CUDA_VISIBLE_DEVICES=0 python learning/train_jax_apg.py --env_name Go2Joystick2 
 no heuristic
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 python learning/train_jax_apg.py --env_name Go2Joystick2 --train_env_cfg_overrides '{"rewards.scales.feet_traj": 0.0}' --use_wandb --suffix 'no-heuristic'
-```
+ CUDA_VISIBLE_DEVICES=1 python learning/train_jax_apg.py --env_name Go2Joystick2 --train_env_cfg_overrides '{"rewards.terms.feet_traj.scale": 0.0}' --eval_env_cfg_overrides '{"rewards.terms.feet_traj.scale": 0.0}' --use_wandb --suffix 'no-heuristic'

@@ -146,6 +146,7 @@ class RewardManager:
         self._cfg = cfg
         self._context_fn = context_fn
         self._active_terms = []
+        self._all_term_names = []  # Track all term names for consistent pytree structure
 
         if "terms" in cfg.rewards:
             terms_cfg = cfg.rewards.terms
@@ -157,6 +158,7 @@ class RewardManager:
 
         for name, raw_term in terms_cfg.items():
             term = normalize_reward_term(name, raw_term)
+            self._all_term_names.append(name)  # Track all names
             if not term.enabled or term.scale == 0.0:
                 continue
             self._active_terms.append((name, term.scale, getattr(reward_module, term.func)))
@@ -164,6 +166,11 @@ class RewardManager:
     @property
     def active_terms(self) -> Sequence[tuple[str, float, Callable[..., Any]]]:
         return self._active_terms
+
+    @property
+    def all_term_names(self) -> Sequence[str]:
+        """Return all reward term names (including disabled ones)."""
+        return self._all_term_names
 
     def compute(
         self,
@@ -175,7 +182,9 @@ class RewardManager:
     ) -> Dict[str, Any]:
         del done
         reward_kwargs = self._context_fn(data, action, info, extra_args)
-        reward_dict = {}
+        # Initialize all terms with 0.0 for consistent pytree structure
+        reward_dict = {name: 0.0 for name in self._all_term_names}
+        # Compute active terms
         for name, scale, func in self._active_terms:
             reward_value = func(data, info, cfg=self._cfg, **reward_kwargs)
             reward_dict[name] = reward_value * scale

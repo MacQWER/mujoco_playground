@@ -529,8 +529,13 @@ def main(argv):
     frames = eval_env.render(
         traj, height=480, width=640, scene_option=scene_option, camera="track"
     )
-    media.write_video(f"rollout0.mp4", frames, fps=fps)
-    print(f"Rollout video saved as 'rollout0.mp4'.")
+    # Render and save the rollout with suffix in filename if provided.
+    if _SUFFIX.value is not None:
+        video_name = f"rollout-{_SUFFIX.value}-0.mp4"
+    else:
+        video_name = "rollout0.mp4"
+    media.write_video(video_name, frames, fps=fps)
+    print(f"Rollout video saved as '{video_name}'.")
 
 
 if __name__ == "__main__":
