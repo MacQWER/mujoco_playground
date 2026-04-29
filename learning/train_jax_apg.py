@@ -14,6 +14,7 @@
 # ==============================================================================
 """Train an APG agent using JAX on the specified environment."""
 
+import copy
 import datetime
 import functools
 import json
@@ -299,11 +300,40 @@ def main(argv):
     logdir.mkdir(parents=True, exist_ok=True)
     print(f"Logs are being stored in: {logdir}")
 
+    # Load environment with optional config overrides
+    def apply_cfg_overrides(base_cfg, overrides_json):
+        if overrides_json is None:
+            return base_cfg
+        overrides = json.loads(overrides_json)
+        for key, value in overrides.items():
+            keys = key.split(".")
+            cfg = base_cfg
+            for k in keys[:-1]:
+                cfg = cfg[k]
+            cfg[keys[-1]] = value
+        return base_cfg
+
+    # Create train and eval configs with deepcopy to avoid cross-contamination
+    train_env_cfg = copy.deepcopy(env_cfg)
+    train_env_cfg = apply_cfg_overrides(train_env_cfg, _TRAIN_ENV_CFG_OVERRIDES.value)
+
+    eval_env_cfg = copy.deepcopy(env_cfg)
+    eval_env_cfg = apply_cfg_overrides(eval_env_cfg, _EVAL_ENV_CFG_OVERRIDES.value)
+
+    print("=" * 60)
+    print("Train Environment Config:")
+    print(f"{train_env_cfg}")
+    print("=" * 60)
+    print("Eval Environment Config:")
+    print(f"{eval_env_cfg}")
+    print("=" * 60)
+
     # Initialize Weights & Biases if required
     if _USE_WANDB.value and not _PLAY_ONLY.value:
         wandb.init(project="mjplayground-apg", name=exp_name)
-        wandb.config.update(env_cfg.to_dict())
         wandb.config.update({"env_name": _ENV_NAME.value})
+        wandb.config.update({"train_env_cfg": train_env_cfg.to_dict()})
+        wandb.config.update({"eval_env_cfg": eval_env_cfg.to_dict()})
 
     # Initialize TensorBoard if required
     if _USE_TB.value and not _PLAY_ONLY.value:
@@ -332,11 +362,10 @@ def main(argv):
     ckpt_path.mkdir(parents=True, exist_ok=True)
     print(f"Checkpoint path: {ckpt_path}")
 
-    # Save environment configuration
+    # Save train environment configuration
     with open(ckpt_path / "config.json", "w", encoding="utf-8") as fp:
-        json.dump(env_cfg.to_dict(), fp, indent=4)
+        json.dump(train_env_cfg.to_dict(), fp, indent=4)
 
-    print(f"Environment Config:\n{env_cfg}")
     print(f"APG Training Parameters:\n{apg_params}")
 
     times = [time.monotonic()]
@@ -366,29 +395,7 @@ def main(argv):
         if _NUM_EVALS.value > 1:
             print(f"{env_steps}: reward={metrics.get('eval/episode_reward', 'N/A'):.3f}")
 
-    # Load environment with optional config overrides
-    def apply_cfg_overrides(base_cfg, overrides_json):
-        if overrides_json is None:
-            return base_cfg
-        import json as json_module
-        overrides = json_module.loads(overrides_json)
-        for key, value in overrides.items():
-            keys = key.split(".")
-            cfg = base_cfg
-            for k in keys[:-1]:
-                cfg = cfg[k]
-            cfg[keys[-1]] = value
-        return base_cfg
-
-    # Load train environment
-    train_env_cfg = apply_cfg_overrides(env_cfg, _TRAIN_ENV_CFG_OVERRIDES.value)
     env = registry.load(_ENV_NAME.value, config=train_env_cfg)
-
-    # Load evaluation environment with optional overrides
-    if _EVAL_ENV_CFG_OVERRIDES.value is not None:
-        eval_env_cfg = apply_cfg_overrides(env_cfg, _EVAL_ENV_CFG_OVERRIDES.value)
-    else:
-        eval_env_cfg = env_cfg
     eval_env = registry.load(_ENV_NAME.value, config=eval_env_cfg)
 
     # Set up rscope if requested
