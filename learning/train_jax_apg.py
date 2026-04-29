@@ -51,6 +51,8 @@ if "MUJOCO_GL" not in os.environ:
     os.environ["MUJOCO_GL"] = "egl"
 
 import mediapy as media
+import matplotlib.pyplot as plt
+import numpy as np
 from ml_collections import config_dict
 import mujoco
 import mujoco_playground
@@ -64,6 +66,7 @@ import wandb
 # Import APG from apg_alg
 from apg_alg.algorithm import apg
 from apg_alg.networks import apg_networks
+from brax.training.acme import running_statistics
 
 
 xla_flags = os.environ.get("XLA_FLAGS", "")
@@ -166,6 +169,9 @@ _SAVE_CHECKPOINTS = flags.DEFINE_boolean(
 )
 _NUM_VIDEOS = flags.DEFINE_integer(
     "num_videos", 1, "Number of videos to record after training."
+)
+_GAIT_DIAGRAM = flags.DEFINE_boolean(
+    "gait_diagram", False, "Plot gait contact diagram (Gantt chart) for Go2"
 )
 _TRAIN_ENV_CFG_OVERRIDES = flags.DEFINE_string(
     "train_env_cfg_overrides", None,
@@ -449,10 +455,12 @@ def main(argv):
         policy_params = data['policy_params']
         params = (normalizer_params, policy_params)
 
-        # Create inference function directly
+        # Create inference function with normalizer (same as apg.train does)
+        normalize_fn = running_statistics.normalize if _NORMALIZE_OBSERVATIONS.value else lambda x, y: x
         apg_network = apg_networks.make_apg_networks(
             env.observation_size,
             env.action_size,
+            preprocess_observations_fn=normalize_fn,
             **apg_params.network_factory
         )
         make_inference_fn = apg_networks.make_inference_fn(apg_network)
@@ -501,20 +509,47 @@ def main(argv):
     jit_reset = jax.jit(eval_env.reset)
     jit_step = jax.jit(eval_env.step)
 
+    # Helper function to set command in both info and obs
+    def set_cmd(state, cmd):
+        new_info = state.info.copy()
+        new_info["command"] = cmd
+        new_obs = state.obs.copy()
+        if "state" in new_obs:
+            # Go2Joystick2 obs layout: w(3), g(3), command(3), qpos(12), qvel(12),
+            # last_action(12), kin_ref(12), anchor_action(12), gait_phase(2)
+            # command is at indices 6-9
+            new_obs["state"] = new_obs["state"].at[6:9].set(cmd)
+        return state.replace(info=new_info, obs=new_obs)
+
     # Run evaluation rollouts.
     rng = jax.random.PRNGKey(_SEED.value)
     target_command = jp.array([0.5, 0.0, 0.0])
 
     rollout = []
+    contact_history = []  # Store contact info for gait diagram
     state = jit_reset(rng)
-    for _ in range(apg_params.episode_length):
-        # Set command
-        state.info["command"] = target_command
+    state = set_cmd(state, target_command)  # Set command before first step
 
+    for step_idx in range(apg_params.episode_length):
         act_rng, rng = jax.random.split(rng)
         ctrl, _ = jit_inference_fn(state.obs, act_rng)
         state = jit_step(state, ctrl)
+        state = set_cmd(state, target_command)  # Update command after each step
         rollout.append(state)
+
+        # Collect contact info for gait diagram
+        if _GAIT_DIAGRAM.value:
+            # Get foot contact state from info
+            # contact is a soft value (0~1), use threshold 0.5 to determine contact
+            if "contact" in state.info:
+                contact = state.info["contact"]
+            elif "last_contact" in state.info:
+                contact = state.info["last_contact"]
+            else:
+                # Compute contact from foot height
+                foot_z = state.data.geom_xpos[eval_env.feet_inds][:, 2]
+                contact = jax.nn.sigmoid((0.025 - foot_z) * 100.0)
+            contact_history.append(contact)
 
     # Render and save the rollout.
     render_every = 2
@@ -536,6 +571,72 @@ def main(argv):
         video_name = "rollout0.mp4"
     media.write_video(video_name, frames, fps=fps)
     print(f"Rollout video saved as '{video_name}'.")
+
+    # Plot gait contact diagram (Gantt chart) if requested
+    if _GAIT_DIAGRAM.value and len(contact_history) > 0:
+        # Convert contact history to numpy array
+        contact_array = jp.stack(contact_history)  # shape: (num_steps, 4)
+        contact_array = np.array(contact_array)
+
+        # Foot names
+        foot_names = ["FL (Front Left)", "FR (Front Right)", "RL (Rear Left)", "RR (Rear Right)"]
+
+        # Create gait diagram
+        fig, ax = plt.subplots(figsize=(12, 4))
+
+        dt = eval_env.dt
+        time_steps = np.arange(len(contact_array)) * dt
+
+        # Plot contact bars (stance phase = contact, swing phase = no contact)
+        for foot_idx, foot_name in enumerate(foot_names):
+            foot_contact = contact_array[:, foot_idx]
+
+            # Find stance and swing phases
+            stance_mask = foot_contact > 0.5
+
+            # Plot as colored blocks - stance (contact) as filled, swing as empty
+            ax.fill_between(
+                time_steps, foot_idx + 0.1, foot_idx + 0.9,
+                where=stance_mask,
+                color='steelblue',
+                alpha=0.8,
+                label='Stance (Contact)' if foot_idx == 0 else None
+            )
+
+            # Draw horizontal line for the foot track
+            ax.axhline(y=foot_idx + 0.5, color='gray', linestyle='-', linewidth=0.5)
+
+        # Customize plot
+        ax.set_yticks([0.5, 1.5, 2.5, 3.5])
+        ax.set_yticklabels(foot_names)
+        ax.set_ylim(0, 4)
+        ax.set_xlim(0, time_steps[-1])
+        ax.set_xlabel('Time (seconds)', fontsize=12)
+        ax.set_ylabel('Foot', fontsize=12)
+        ax.set_title('Go2 Gait Contact Diagram', fontsize=14)
+        ax.legend(loc='upper right')
+        ax.grid(True, axis='x', alpha=0.3)
+
+        # Add stride frequency annotation if gait is periodic
+        ax.annotate(
+            f'Episode length: {time_steps[-1]:.2f}s\nFPS: {fps:.1f}',
+            xy=(0.02, 0.98),
+            xycoords='axes fraction',
+            fontsize=10,
+            verticalalignment='top',
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+        )
+
+        plt.tight_layout()
+
+        # Save figure
+        if _SUFFIX.value is not None:
+            diagram_name = f"gait_diagram-{_SUFFIX.value}.png"
+        else:
+            diagram_name = "gait_diagram.png"
+        fig.savefig(diagram_name, dpi=150, bbox_inches='tight')
+        print(f"Gait contact diagram saved as '{diagram_name}'.")
+        plt.close(fig)
 
 
 if __name__ == "__main__":

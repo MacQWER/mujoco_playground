@@ -82,3 +82,10 @@ no heuristic
 
 ```bash
  CUDA_VISIBLE_DEVICES=1 python learning/train_jax_apg.py --env_name Go2Joystick2 --train_env_cfg_overrides '{"rewards.terms.feet_traj.scale": 0.0}' --eval_env_cfg_overrides '{"rewards.terms.feet_traj.scale": 0.0}' --use_wandb --suffix 'no-heuristic'
+```
+
+play and plot Gait Contact Diagram
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python learning/train_jax_apg.py --env_name Go2Joystick2 --play_only --load_checkpoint_path logs/Go2Joystick2-20260429-162255-no-symloss/checkpoints/params.pkl --gait_diagram --suffix 'no-symloss-play'
+```
