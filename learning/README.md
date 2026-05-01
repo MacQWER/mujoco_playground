@@ -89,3 +89,10 @@ play and plot Gait Contact Diagram
 ```bash
 CUDA_VISIBLE_DEVICES=0 python learning/train_jax_apg.py --env_name Go2Joystick2 --play_only --load_checkpoint_path logs/Go2Joystick2-20260429-162255-no-symloss/checkpoints/params.pkl --gait_diagram --suffix 'no-symloss-play'
 ```
+
+APG for Pushbox
+
+```bash
+CUDA_VISIBLE_DEVICES=4 WANDB_PROJECT=test python learning/train_jax_apg.py --env_name=PushBox --use_wandb --train_env_cfg_overrides='{"solimp": [0.01
+5, 0.99, 0.031], "solref": [0.02, 1.0]}' --eval_env_cfg_overrides='{"solimp": [0.95, 0.99, 0.001], "solref": [0.004, 1.0]}' --suffix 'apg-test7' --seed 0
+```

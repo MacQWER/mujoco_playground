@@ -30,14 +30,14 @@
 
         <body name="box" pos="0.20 0 0.1">
             <joint name="box_x" type="slide" axis="1 0 0" damping="10"/>
-            <geom name="box_geom" type="box" size="0.1 0.1 0.1" mass="10.0" rgba="0.6 0.6 0.6 1" solref="0.02 1" solimp="0.015 1 0.031 0.5 2"/>
+            <geom name="box_geom" type="box" size="0.1 0.1 0.1" mass="1.0" rgba="0.6 0.6 0.6 1" solref="0.02 1" solimp="0.015 1 0.031 0.5 2"/>
         </body>
 
         <geom name="target" type="box" size="0.01 0.15 0.15" pos="0.4 0 0.1" rgba="0 1 0 0.5" contype="0" conaffinity="0"/>
     </worldbody>
 
     <actuator>
-        <position name="ball_position" joint="ball_x" kp="100" ctrlrange="-1 1"/>
+        <position name="ball_position" joint="ball_x" kp="10" ctrlrange="-1 1"/>
     </actuator>
 
     </mujoco>

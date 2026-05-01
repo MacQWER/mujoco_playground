@@ -95,6 +95,7 @@ class PushBox(mjx_env.MjxEnv):
 
     metrics = {
         "reward/box_to_target": jp.zeros(()),
+        "reward/ball_to_box": jp.zeros(()),
     }
     info = {"rng": rng, "prev_action": jp.zeros(self.mjx_model.nu)}
 
@@ -104,8 +105,8 @@ class PushBox(mjx_env.MjxEnv):
     return mjx_env.State(data, obs, reward, done, metrics, info)
 
   def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
-    action = jp.clip(action, -1.0, 1.0) + 1.0  # Rescale action from [-1, 1] to [0, 2]
-    action = action * 0.5  # Scale action to [0, 1]
+    action = jp.clip(action, -1.0, 1.0)
+    action = action * 0.4 + 0.4  # Rescale from [-1, 1] to [0, 0.8]
     data = mjx_env.step(self.mjx_model, state.data, action, self.n_substeps)
     reward = self._get_reward(data, action, state.info, state.metrics)
     obs = self._get_obs(data, state.info)
@@ -129,15 +130,19 @@ class PushBox(mjx_env.MjxEnv):
       metrics: dict[str, Any],
   ) -> jax.Array:
     box_x = data.qpos[self._box_qpos_addr]
+    ball_x = data.qpos[0]
     box_vel = data.qvel[self._box_qpos_addr]
     box_to_target = jp.abs(box_x - self._target_x)
+    ball_to_box = jp.abs(box_x - ball_x - 0.2)
     metrics["reward/box_to_target"] = box_to_target
+    metrics["reward/ball_to_box"] = ball_to_box
     distance_reward = -box_to_target
+    contact_reward = -0.5 * ball_to_box
     action_penalty = -0.0001 * jp.sum(action**2)
     action_rate_penalty = -0.01 * jp.sum((action - info["prev_action"]) ** 2)
     box_vel_penalty = -0.1 * box_vel**2
 
-    return distance_reward + action_penalty + action_rate_penalty + box_vel_penalty
+    return distance_reward + contact_reward + action_penalty + action_rate_penalty + box_vel_penalty
 
   @property
   def xml_path(self) -> str:
