@@ -19,6 +19,7 @@ import os
 if "MUJOCO_GL" not in os.environ:
     os.environ["MUJOCO_GL"] = "egl"
 
+import copy
 import datetime
 import functools
 import json
@@ -162,6 +163,7 @@ _DETERMINISTIC_RSCOPE = flags.DEFINE_boolean(
     True,
     "Run deterministic rollouts for the rscope viewer",
 )
+_PROJECT = flags.DEFINE_string("project", "mjxrl", "Wandb project name")
 _RUN_EVALS = flags.DEFINE_boolean(
     "run_evals",
     True,
@@ -178,6 +180,14 @@ _TRAINING_METRICS_STEPS = flags.DEFINE_integer(
     1_000_000,
     "Number of steps between logging training metrics. Increase if training"
     " experiences slowdown.",
+)
+_TRAIN_ENV_CFG_OVERRIDES = flags.DEFINE_string(
+    "train_env_cfg_overrides", None,
+    "JSON string to override train env config (e.g., '{\"solimp\": [0.95, 0.99, 0.001], \"solref\": [0.004, 1.0]}')"
+)
+_EVAL_ENV_CFG_OVERRIDES = flags.DEFINE_string(
+    "eval_env_cfg_overrides", None,
+    "JSON string to override eval env config (e.g., '{\"solimp\": [0.95, 0.99, 0.001], \"solref\": [0.004, 1.0]}')"
 )
 
 
@@ -224,6 +234,18 @@ def main(argv):
   # Load environment configuration
   env_cfg = registry.get_default_config(_ENV_NAME.value)
   env_cfg["impl"] = _IMPL.value
+
+  def apply_cfg_overrides(base_cfg, overrides_json):
+    if overrides_json is None:
+      return base_cfg
+    overrides = json.loads(overrides_json)
+    for key, value in overrides.items():
+      keys = key.split(".")
+      cfg = base_cfg
+      for k in keys[:-1]:
+        cfg = cfg[k]
+      cfg[keys[-1]] = value
+    return base_cfg
 
   ppo_params = get_rl_config(_ENV_NAME.value)
 
@@ -278,7 +300,15 @@ def main(argv):
   if _VISION.value:
     env_cfg.vision = True
     env_cfg.vision_config.render_batch_size = ppo_params.num_envs
-  env = registry.load(_ENV_NAME.value, config=env_cfg)
+
+  # Create train and eval configs with deepcopy to avoid cross-contamination
+  train_env_cfg = copy.deepcopy(env_cfg)
+  train_env_cfg = apply_cfg_overrides(train_env_cfg, _TRAIN_ENV_CFG_OVERRIDES.value)
+
+  eval_env_cfg = copy.deepcopy(env_cfg)
+  eval_env_cfg = apply_cfg_overrides(eval_env_cfg, _EVAL_ENV_CFG_OVERRIDES.value)
+
+  env = registry.load(_ENV_NAME.value, config=train_env_cfg)
   if _RUN_EVALS.present:
     ppo_params.run_evals = _RUN_EVALS.value
   if _LOG_TRAINING_METRICS.present:
@@ -286,7 +316,8 @@ def main(argv):
   if _TRAINING_METRICS_STEPS.present:
     ppo_params.training_metrics_steps = _TRAINING_METRICS_STEPS.value
 
-  print(f"Environment Config:\n{env_cfg}")
+  print(f"Train Environment Config:\n{train_env_cfg}")
+  print(f"Eval Environment Config:\n{eval_env_cfg}")
   print(f"PPO Training Parameters:\n{ppo_params}")
 
   # Generate unique experiment name
@@ -304,8 +335,9 @@ def main(argv):
 
   # Initialize Weights & Biases if required
   if _USE_WANDB.value and not _PLAY_ONLY.value:
-    wandb.init(project="mjxrl", name=exp_name)
-    wandb.config.update(env_cfg.to_dict())
+    wandb.init(project=_PROJECT.value, name=exp_name)
+    wandb.config.update({"train_env_cfg": train_env_cfg.to_dict()})
+    wandb.config.update({"eval_env_cfg": eval_env_cfg.to_dict()})
     wandb.config.update({"env_name": _ENV_NAME.value})
 
   # Initialize TensorBoard if required
@@ -337,7 +369,7 @@ def main(argv):
 
   # Save environment configuration
   with open(ckpt_path / "config.json", "w", encoding="utf-8") as fp:
-    json.dump(env_cfg.to_dict(), fp, indent=4)
+    json.dump(train_env_cfg.to_dict(), fp, indent=4)
 
   training_params = dict(ppo_params)
   if "network_factory" in training_params:
@@ -415,7 +447,7 @@ def main(argv):
   # Load evaluation environment.
   eval_env = None
   if not _VISION.value:
-    eval_env = registry.load(_ENV_NAME.value, config=env_cfg)
+    eval_env = registry.load(_ENV_NAME.value, config=eval_env_cfg)
   num_envs = 1
   if _VISION.value:
     num_envs = env_cfg.vision_config.render_batch_size
@@ -426,7 +458,7 @@ def main(argv):
     from rscope import brax as rscope_utils
 
     if not _VISION.value:
-      rscope_env = registry.load(_ENV_NAME.value, config=env_cfg)
+      rscope_env = registry.load(_ENV_NAME.value, config=train_env_cfg)
       rscope_env = wrapper.wrap_for_brax_training(
           rscope_env,
           episode_length=ppo_params.episode_length,
@@ -470,20 +502,18 @@ def main(argv):
   jit_inference_fn = jax.jit(inference_fn)
 
   # Run evaluation rollouts.
-  def do_rollout(rng, state, target_cmd):
-    def set_cmd(state, cmd):
-        new_info = state.info.copy()
-        new_info["command"] = cmd
-        new_obs = state.obs.copy()
-        if "state" in new_obs:
-            # Go2Joystick2 obs layout: w(3), g(3), command(3), qpos(12), qvel(12),
-            # last_action(12), kin_ref(12), anchor_action(12), gait_phase(2)
-            # command is at indices 6-9, NOT at the last 3
-            new_obs["state"] = new_obs["state"].at[6:9].set(cmd)
-        return state.replace(info=new_info, obs=new_obs)
+  def set_cmd(state, cmd):
+    new_info = state.info.copy()
+    new_info["command"] = cmd
+    new_obs = state.obs
+    if isinstance(new_obs, dict) and "state" in new_obs:
+      new_obs = new_obs.copy()
+      new_obs["state"] = new_obs["state"].at[6:9].set(cmd)
+    return state.replace(info=new_info, obs=new_obs)
 
+  def rollout_fn(rng, state, target_cmd):
+    """Run a full rollout collecting rewards for total reward computation."""
     state = set_cmd(state, target_cmd)
-
     empty_data = state.data.__class__(
         **{k: None for k in state.data.__annotations__}
     )  # pytype: disable=attribute-error
@@ -509,12 +539,12 @@ def main(argv):
       })
       if _VISION.value:
         traj_data = jax.tree_util.tree_map(lambda x: x[0], traj_data)
-      return (state, rng), traj_data
+      return (state, rng), (traj_data, state.reward)
 
-    _, traj = jax.lax.scan(
-        step, (state, rng), None, length=_EPISODE_LENGTH.value
+    (final_state, _), (traj_data, rewards) = jax.lax.scan(
+        step, (state, rng), None, length=ppo_params.episode_length
     )
-    return traj
+    return final_state, traj_data, rewards
 
   rng = jax.random.split(jax.random.PRNGKey(_SEED.value), _NUM_VIDEOS.value)
   reset_states = jax.jit(jax.vmap(eval_env.reset))(rng)
@@ -524,14 +554,21 @@ def main(argv):
   target_command = jp.array([0.5, 0.0, 0.0])
   batch_commands = jp.tile(target_command, (_NUM_VIDEOS.value, 1))
 
-  traj_stacked = jax.jit(jax.vmap(do_rollout))(rng, reset_states, batch_commands)
-  trajectories = [None] * _NUM_VIDEOS.value
+  trajectories = []
+  total_rewards = []
   for i in range(_NUM_VIDEOS.value):
-    t = jax.tree.map(lambda x, i=i: x[i], traj_stacked)
-    trajectories[i] = [
-        jax.tree.map(lambda x, j=j: x[j], t)
-        for j in range(_EPISODE_LENGTH.value)
-    ]
+    vs = jax.tree_util.tree_map(lambda x, i=i: x[i], reset_states)
+    vr = rng[i] if not _VISION.value else jax.random.PRNGKey(_SEED.value)
+    vc = batch_commands[i]
+    final_state, traj_data, rewards = jax.jit(rollout_fn)(vr, vs, vc)
+    trajectories.append([
+        jax.tree.map(lambda x, j=j: x[j], traj_data)
+        for j in range(ppo_params.episode_length)
+    ])
+    total_rewards.append(jp.sum(rewards))
+
+  for i, tr in enumerate(total_rewards):
+    print(f"Rollout {i} total reward: {tr:.3f}")
 
   # Render and save the rollout.
   render_every = 2
@@ -546,8 +583,12 @@ def main(argv):
     frames = eval_env.render(
         traj, height=480, width=640, scene_option=scene_option, camera="track"
     )
-    media.write_video(f"rollout{i}.mp4", frames, fps=fps)
-    print(f"Rollout video saved as 'rollout{i}.mp4'.")
+    if _SUFFIX.value is not None:
+      video_name = f"rollout-{_SUFFIX.value}-{i}.mp4"
+    else:
+      video_name = f"rollout{i}.mp4"
+    media.write_video(video_name, frames, fps=fps)
+    print(f"Rollout video saved as '{video_name}'.")
 
 
 if __name__ == "__main__":

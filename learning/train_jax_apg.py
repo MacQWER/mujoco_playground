@@ -170,6 +170,7 @@ _SAVE_CHECKPOINTS = flags.DEFINE_boolean(
 _NUM_VIDEOS = flags.DEFINE_integer(
     "num_videos", 1, "Number of videos to record after training."
 )
+_PROJECT = flags.DEFINE_string("project", "mjplayground-apg", "Wandb project name")
 _GAIT_DIAGRAM = flags.DEFINE_boolean(
     "gait_diagram", False, "Plot gait contact diagram (Gantt chart) for Go2"
 )
@@ -336,7 +337,7 @@ def main(argv):
 
     # Initialize Weights & Biases if required
     if _USE_WANDB.value and not _PLAY_ONLY.value:
-        wandb.init(project="mjplayground-apg", name=exp_name)
+        wandb.init(project=_PROJECT.value, name=exp_name)
         wandb.config.update({"env_name": _ENV_NAME.value})
         wandb.config.update({"train_env_cfg": train_env_cfg.to_dict()})
         wandb.config.update({"eval_env_cfg": eval_env_cfg.to_dict()})

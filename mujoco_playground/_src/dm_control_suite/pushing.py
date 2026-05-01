@@ -21,6 +21,7 @@ import jax.numpy as jp
 from ml_collections import config_dict
 import mujoco
 from mujoco import mjx
+import numpy as np
 
 from mujoco_playground._src import mjx_env
 from mujoco_playground._src.dm_control_suite import common
@@ -32,12 +33,14 @@ def default_config() -> config_dict.ConfigDict:
   return config_dict.create(
       ctrl_dt=0.02,
       sim_dt=0.002,
-      episode_length=100,
+      episode_length=256,
       action_repeat=1,
       impl="jax",
       nconmax=4,
       njmax=20,
       target_x=0.2,
+      solimp=[0.015, 1.0, 0.031],
+      solref=[0.02, 1.0],
   )
 
 
@@ -61,6 +64,17 @@ class PushBox(mjx_env.MjxEnv):
         _XML_PATH.read_text(), self._model_assets
     )
     self._mj_model.opt.timestep = self.sim_dt
+
+    # Apply solimp/solref from config to ball and box geoms before put_model.
+    solimp = self._config.solimp
+    solref = self._config.solref
+    full_solimp = np.array([solimp[0], solimp[1], solimp[2], 0.5, 2.0])
+    full_solref = np.array([solref[0], solref[1]])
+    for geom_name in ("ball_geom", "box_geom"):
+      geom_id = self._mj_model.geom(geom_name).id
+      self._mj_model.geom_solimp[geom_id] = full_solimp
+      self._mj_model.geom_solref[geom_id] = full_solref
+
     self._mjx_model = mjx.put_model(self._mj_model, impl=self._config.impl)
     self._post_init()
 
@@ -115,13 +129,15 @@ class PushBox(mjx_env.MjxEnv):
       metrics: dict[str, Any],
   ) -> jax.Array:
     box_x = data.qpos[self._box_qpos_addr]
+    box_vel = data.qvel[self._box_qpos_addr]
     box_to_target = jp.abs(box_x - self._target_x)
     metrics["reward/box_to_target"] = box_to_target
     distance_reward = -box_to_target
     action_penalty = -0.0001 * jp.sum(action**2)
     action_rate_penalty = -0.01 * jp.sum((action - info["prev_action"]) ** 2)
+    box_vel_penalty = -0.1 * box_vel**2
 
-    return distance_reward + action_penalty + action_rate_penalty
+    return distance_reward + action_penalty + action_rate_penalty + box_vel_penalty
 
   @property
   def xml_path(self) -> str:

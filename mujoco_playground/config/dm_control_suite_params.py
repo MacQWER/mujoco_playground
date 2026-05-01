@@ -58,7 +58,7 @@ def brax_ppo_config(
     rl_config.num_updates_per_batch = 4
   elif env_name == "PushBox":
     rl_config.num_timesteps = 1_000_000
-    rl_config.episode_length = 200
+    rl_config.episode_length = 256
     rl_config.learning_rate = 1e-3
     rl_config.num_envs = 256
     rl_config.batch_size = 64
@@ -72,7 +72,7 @@ def brax_ppo_config(
           value_hidden_layer_sizes=(64, 64, 64),
           policy_obs_key="state",
           value_obs_key="state",
-      ),
+      )
 
   return rl_config
 
@@ -182,10 +182,10 @@ def brax_apg_config(
 
   if env_name == "PushBox":
     rl_config.episode_length = 256
-    rl_config.policy_updates = 64
-    rl_config.horizon_length = 256    
-    rl_config.num_envs = 32
-    rl_config.num_evals = 8
+    rl_config.policy_updates = 256
+    rl_config.horizon_length = 128    
+    rl_config.num_envs = 64
+    rl_config.num_evals = 8+1
     rl_config.learning_rate = 3e-4
     rl_config.use_mixed_precision=True
     rl_config.unrollout_length=4
