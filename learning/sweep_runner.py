@@ -68,7 +68,7 @@ import wandb
 warnings.filterwarnings("ignore")
 logging.set_verbosity(logging.WARNING)
 
-BASE_SOLIMP = [0.001, 0.5, 0.3]
+BASE_SOLIMP = [0.01, 0.5, 0.03]
 HIGH_SOLIMP = [0.95, 0.99, 0.001]
 BASE_SOLREF0 = 0.004
 HIGH_SOLREF0 = 0.02
@@ -133,14 +133,24 @@ def _render_video(eval_env, make_inference_fn, params, suffix):
   media.write_video(video_path, frames, fps=fps)
 
   total_reward = float(jp.sum(jp.array([float(s.reward) for s in rollout])))
+  # Track max penetration depth: contact.dist < 0 means penetration
+  contact_dists = jp.array([
+      float(state.data.contact.dist[:state.data.ncon].min())
+      for state in rollout
+  ])
+  has_contact = contact_dists > -1e10  # MuJoCo uses large negative for no contact
+  max_penetration = float(-contact_dists[has_contact].min()) if has_contact.any() else 0.0
   wandb.log({
       "video": wandb.Video(video_path, fps=fps, format="mp4"),
       "total_reward": total_reward,
+      "max_penetration_depth": max_penetration,
   })
   wandb.finish()
+  return max_penetration
 
 
 def run_ppo(a0, a1, a2, ar0, suffix):
+  print(f"  > import ppo ...")
   ppo_train, ppo_networks = _import_ppo()
   solimp, solref = build_params(a0, a1, a2, ar0)
 
@@ -155,6 +165,7 @@ def run_ppo(a0, a1, a2, ar0, suffix):
 
   ppo_params = dm_control_suite_params.brax_ppo_config("PushBox", "jax")
 
+  print(f"  > load env ...")
   env = registry.load("PushBox", config=train_env_cfg)
   eval_env = registry.load("PushBox", config=eval_env_cfg)
 
@@ -182,14 +193,18 @@ def run_ppo(a0, a1, a2, ar0, suffix):
       num_eval_envs=num_eval_envs,
   )
 
+  print(f"  > compiling + training (may take several mins on first run) ...")
   make_inference_fn, params, _ = train_fn(
       environment=env, progress_fn=progress,
       policy_params_fn=noop_policy_params_fn, eval_env=eval_env,
   )
-  _render_video(eval_env, make_inference_fn, params, suffix)
+  print(f"  > training done, rendering video ...")
+  max_penetration = _render_video(eval_env, make_inference_fn, params, suffix)
+  print(f"  > video done (max penetration: {max_penetration:.6f})")
 
 
 def run_apg(a0, a1, a2, ar0, suffix):
+  print(f"  > import apg ...")
   apg_train, apg_networks = _import_apg()
   solimp, solref = build_params(a0, a1, a2, ar0)
 
@@ -204,6 +219,7 @@ def run_apg(a0, a1, a2, ar0, suffix):
 
   apg_params = dm_control_suite_params.brax_apg_config("PushBox")
 
+  print(f"  > load env ...")
   env = registry.load("PushBox", config=train_env_cfg)
   eval_env = registry.load("PushBox", config=eval_env_cfg)
 
@@ -231,8 +247,11 @@ def run_apg(a0, a1, a2, ar0, suffix):
       eval_env=eval_env,
   )
 
+  print(f"  > compiling + training (may take several mins on first run) ...")
   make_inference_fn, params, _ = train_fn(environment=env)
-  _render_video(eval_env, make_inference_fn, params, suffix)
+  print(f"  > training done, rendering video ...")
+  max_penetration = _render_video(eval_env, make_inference_fn, params, suffix)
+  print(f"  > video done (max penetration: {max_penetration:.6f})")
 
 
 def main(argv):
@@ -252,7 +271,7 @@ def main(argv):
     solimp, solref = build_params(a0, a1, a2, ar0)
     suffix = f"a0{a0:.1f}_a1{a1:.1f}_a2{a2:.1f}_ar0{ar0:.1f}"
     t0 = time.time()
-    print(f"[{i+1}/{len(configs)}] {suffix}")
+    print(f"[{i+1}/{len(configs)}] {suffix} (started at {time.strftime('%H:%M:%S')})")
 
     wandb.init(project=project, name=f"PushBox-{suffix}", config={
         "a0": float(a0), "a1": float(a1), "a2": float(a2), "ar0": float(ar0),

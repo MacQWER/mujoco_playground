@@ -28,9 +28,11 @@ Usage:
     python learning/launch_sweep.py [--dry_run]
 """
 
+import fcntl
 import itertools
 import json
 import os
+import select
 import subprocess
 import sys
 import time
@@ -57,21 +59,24 @@ def launch(dry_run=False):
   print("=" * 60)
   print(f"PPO Project: {PPO_PROJECT}")
   print(f"APG Project: {APG_PROJECT}")
-  print(f"Grid: 5×5×5×4 = {5*5*5*4} combos per algorithm")
-  print(f"Total runs: {500 * 2}")
+  print(f"Grid: 4×4×4×2 = {4*4*4*2} combos per algorithm")
+  print(f"Total runs per algo: {4*4*4*2}")
+  algo_name = _ALGORITHM.value or "both"
+  print(f"Algorithm: {algo_name.upper()}")
   print(f"GPUs: {GPUS}")
-  print(f"Wave size: PPO=250, APG=50")
   print()
 
-  print("Will create two wandb projects (runs will be auto-created on first wandb.init):")
-  print(f"  PPO: {PPO_PROJECT}")
-  print(f"  APG: {APG_PROJECT}")
+  print("W&B projects (runs auto-created on first wandb.init):")
+  if _ALGORITHM.value is None or _ALGORITHM.value == "ppo":
+    print(f"  PPO: {PPO_PROJECT}")
+  if _ALGORITHM.value is None or _ALGORITHM.value == "apg":
+    print(f"  APG: {APG_PROJECT}")
 
   grid = list(itertools.product(
-      [i / 4 for i in range(5)],  # a0
-      [i / 4 for i in range(5)],  # a1
-      [i / 4 for i in range(5)],  # a2
-      [i / 3 for i in range(4)],  # ar0
+      [i / 3 for i in range(4)],  # a0
+      [i / 3 for i in range(4)],  # a1
+      [i / 3 for i in range(4)],  # a2
+      [i / 1 for i in range(2)],  # ar0
   ))
   grid = grid[:_MAX_CONFIGS.value]
   print(f"Grid: {len(grid)} combos per algorithm")
@@ -88,10 +93,16 @@ def launch(dry_run=False):
   log_dir = os.path.join(SCRIPT_DIR, "..", "logs", "sweep")
   os.makedirs(log_dir, exist_ok=True)
 
-  for algo, project, per_gpu in [
-      ("ppo", PPO_PROJECT, PPO_PER_GPU),
-      ("apg", APG_PROJECT, APG_PER_GPU),
-  ]:
+  algos_to_run = [
+      (algo, project, per_gpu)
+      for algo, project, per_gpu in [
+          ("ppo", PPO_PROJECT, PPO_PER_GPU),
+          ("apg", APG_PROJECT, APG_PER_GPU),
+      ]
+      if _ALGORITHM.value is None or algo == _ALGORITHM.value
+  ]
+
+  for algo, project, per_gpu in algos_to_run:
     print(f"\n{'='*60}")
     print(f"Running {algo.upper()} ({len(grid)} configs)")
     print(f"{'='*60}")
@@ -123,19 +134,65 @@ def launch(dry_run=False):
         env["OMP_NUM_THREADS"] = "1"
         env["MKL_NUM_THREADS"] = "1"
         env["OPENBLAS_NUM_THREADS"] = "1"
+        env["PYTHONUNBUFFERED"] = "1"
 
         proc = subprocess.Popen(
             cmd,
             env=env,
-            stdout=open(log_file, "w"),
+            stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            text=True,
         )
-        procs.append(proc)
+        procs.append((proc, slot_id, gpu, log_file))
         time.sleep(0.05)
 
-      # Wait for wave to finish
+      # Stream output from all subprocesses concurrently using select
       wave_ok = wave_fail = 0
-      for proc in procs:
+      # Make stdout non-blocking
+      for proc, slot_id, gpu, log_file in procs:
+        fd = proc.stdout.fileno()
+        fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+        fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+
+      # Track open file handles for log writing
+      log_files = {}
+      for proc, slot_id, gpu, log_file in procs:
+        log_files[proc] = open(log_file, "w")
+
+      # Track which processes have finished reading
+      remaining = {proc for proc, _, _, _ in procs}
+
+      while remaining:
+        readable, _, _ = select.select(
+            [proc.stdout for proc in remaining], [], [], 1.0
+        )
+        for fd in readable:
+          proc = next(p for p in remaining if p.stdout.fileno() == fd.fileno())
+          try:
+            data = os.read(fd.fileno(), 65536)
+          except BlockingIOError:
+            continue
+          if not data:
+            remaining.discard(proc)
+            continue
+          text = data.decode("utf-8", errors="replace")
+          for line in text.splitlines(True):
+            line = line.rstrip()
+            if not line:
+              continue
+            proc_info = next(
+                (p for p in procs if p[0] is proc), None
+            )
+            if proc_info:
+              _, slot_id, gpu, _ = proc_info
+              prefix = f"[gpu{gpu}/slot{slot_id}]"
+              print(f"  {prefix} {line}")
+            log_files[proc].write(line + "\n")
+            log_files[proc].flush()
+
+      # Close log files and wait for processes
+      for proc, slot_id, gpu, log_file in procs:
+        log_files[proc].close()
         proc.wait()
         if proc.returncode == 0:
           wave_ok += 1
@@ -144,16 +201,17 @@ def launch(dry_run=False):
         ok += 1 if proc.returncode == 0 else 0
         fail += 1 if proc.returncode != 0 else 0
 
-      print(f"  Wave {wave_start//wave_size + 1}: {wave_ok} OK, {wave_fail} FAIL [{ok}/{total}]")
+      print(f"\n  Wave {wave_start//wave_size + 1}: {wave_ok} OK, {wave_fail} FAIL [{ok}/{total}]\n")
 
     print(f"  {algo.upper()}: OK={ok}, FAIL={fail}")
 
   print(f"\nAll complete!")
 
 
+_ALGORITHM = flags.DEFINE_string("algo", None, "Run only this algorithm (ppo or apg). If None, run both.")
 _DRY_RUN = flags.DEFINE_boolean("dry_run", False, "Show schedule without launching")
 _MAX_CONFIGS = flags.DEFINE_integer(
-    "max_configs", 500,
+    "max_configs", 128,
     "Limit total configs per algorithm (for testing)",
 )
 _WAVE_SIZE = flags.DEFINE_integer(

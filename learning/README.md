@@ -96,3 +96,15 @@ APG for Pushbox
 CUDA_VISIBLE_DEVICES=4 WANDB_PROJECT=test python learning/train_jax_apg.py --env_name=PushBox --use_wandb --train_env_cfg_overrides='{"solimp": [0.01
 5, 0.99, 0.031], "solref": [0.02, 1.0]}' --eval_env_cfg_overrides='{"solimp": [0.95, 0.99, 0.001], "solref": [0.004, 1.0]}' --suffix 'apg-test7' --seed 0
 ```
+
+A simple test for sweeping:
+
+```bash
+CUDA_VISIBLE_DEVICES=4,5,6,7 python learning/launch_sweep.py --algo=ppo --max_configs=8 --wave_size=4
+```
+
+The full command for sweeping:
+
+```bash
+CUDA_VISIBLE_DEVICES=4,5,6,7 python learning/launch_sweep.py --algo=ppo --max_configs=128 --wave_size=4 
+```
