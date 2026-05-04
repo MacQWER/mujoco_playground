@@ -161,6 +161,106 @@ def brax_apg_config(
       -9.0, 10.0, 11.0,       # RL <- RR
       -6.0, 7.0, 8.0,         # RR <- RL
     )
+  elif env_name in ("G1Joystick2",):
+    rl_config.episode_length=1000
+    rl_config.policy_updates=256
+    rl_config.horizon_length=64
+    rl_config.num_envs=256
+    rl_config.deterministic_eval=True
+    rl_config.learning_rate=1e-4
+    rl_config.num_eval_envs=64
+    rl_config.num_evals=64 + 1
+    rl_config.max_gradient_norm=1.0
+    rl_config.reward_scale = 10.0
+    rl_config.use_float64=True
+    rl_config.use_mixed_precision=True
+    rl_config.unrollout_length=4
+    rl_config.normalize_observations=True
+    rl_config.network_factory = config_dict.create(
+        hidden_layer_sizes=(256, 128),
+        policy_obs_key="state",
+    )
+    # Symmetry loss for G1Joystick2 residual policy.
+    # Obs layout (127): w(3), g(3), cmd(3), qpos(29), qvel(29),
+    #   last_action(29), kin_ref(29), gait_phase(2)
+    # Action layout (29):
+    #   [left_leg(6), right_leg(6), waist(3), left_arm(7), right_arm(7)]
+    # Signed permutation encoding:
+    #   new[i] = sign(perm[i]) * old[floor(abs(perm[i]) + 1e-3)]
+    # Use -0.0001 to represent "- index 0".
+    rl_config.sym_loss = True
+    rl_config.sym_coef = 2.0
+    rl_config.sym_obs_key = "state"
+    rl_config.obs_permutation = (
+        # 0-8: base states and command
+        -0.0001,    1.0,  -2.0,     # [0-2]   w_local (-wx, wy, -wz)
+         3.0,      -4.0,   5.0,     # [3-5]   g_local (gx, -gy, gz)
+         6.0,      -7.0,  -8.0,     # [6-8]   command (vx, -vy, -wz)
+
+        # 9-37: angles (qpos - default_ap_pose)
+        # Left leg (9-14) <- Right leg (15-20)
+        15.0,     16.0,  17.0,  18.0,  19.0,  20.0,
+        # Right leg (15-20) <- Left leg (9-14)
+         9.0,     10.0,  11.0,  12.0,  13.0,  14.0,
+        # Waist (21-23) — yaw(-), roll(-), pitch(+)
+        -21.0,    -22.0,  23.0,
+        # Left arm (24-30) <- Right arm (31-37), shoulder_roll(-)
+        31.0,    -32.0,  33.0,  34.0,  35.0,  36.0,  37.0,
+        # Right arm (31-37) <- Left arm (24-30), shoulder_roll(-)
+        24.0,    -25.0,  26.0,  27.0,  28.0,  29.0,  30.0,
+
+        # 38-66: joint_vels (same joint mapping, offset +38)
+        # Left leg (38-43) <- Right leg (44-49)
+        44.0,     45.0,  46.0,  47.0,  48.0,  49.0,
+        # Right leg (44-49) <- Left leg (38-43)
+        38.0,     39.0,  40.0,  41.0,  42.0,  43.0,
+        # Waist (50-52) — yaw(-), roll(-), pitch(+)
+        -50.0,    -51.0,  52.0,
+        # Left arm (53-59) <- Right arm (60-66), shoulder_roll(-)
+        60.0,    -61.0,  62.0,  63.0,  64.0,  65.0,  66.0,
+        # Right arm (60-66) <- Left arm (53-59), shoulder_roll(-)
+        53.0,    -54.0,  55.0,  56.0,  57.0,  58.0,  59.0,
+
+        # 67-95: last_action (same joint mapping, offset +67)
+        # Left leg (67-72) <- Right leg (73-78)
+        73.0,     74.0,  75.0,  76.0,  77.0,  78.0,
+        # Right leg (73-78) <- Left leg (67-72)
+        67.0,     68.0,  69.0,  70.0,  71.0,  72.0,
+        # Waist (79-81) — yaw(-), roll(-), pitch(+)
+        -79.0,    -80.0,  81.0,
+        # Left arm (82-88) <- Right arm (89-95), shoulder_roll(-)
+        89.0,    -90.0,  91.0,  92.0,  93.0,  94.0,  95.0,
+        # Right arm (89-95) <- Left arm (82-88), shoulder_roll(-)
+        82.0,    -83.0,  84.0,  85.0,  86.0,  87.0,  88.0,
+
+        # 96-124: kin_ref (same joint mapping, offset +96)
+        # Left leg (96-101) <- Right leg (102-107)
+        102.0,   103.0, 104.0, 105.0, 106.0, 107.0,
+        # Right leg (102-107) <- Left leg (96-101)
+        96.0,     97.0,  98.0,  99.0, 100.0, 101.0,
+        # Waist (108-110) — yaw(-), roll(-), pitch(+)
+        -108.0,  -109.0, 110.0,
+        # Left arm (111-117) <- Right arm (118-124), shoulder_roll(-)
+        118.0,  -119.0, 120.0, 121.0, 122.0, 123.0, 124.0,
+        # Right arm (118-124) <- Left arm (111-117), shoulder_roll(-)
+        111.0,  -112.0, 113.0, 114.0, 115.0, 116.0, 117.0,
+
+        # 125-126: gait_phase [sin(θ), cos(θ)]
+        # Time-reversal: θ -> -θ, so sin(-θ)=-sin(θ), cos(-θ)=cos(θ)
+        -125.0,   126.0,           # [125-126] gait_phase (-sin, cos)
+    )
+    rl_config.act_permutation = (
+        # Left leg (0-5) <- Right leg (6-11)
+        6.0,   7.0,   8.0,   9.0,  10.0,  11.0,
+        # Right leg (6-11) <- Left leg (0-5)
+        0.0,   1.0,   2.0,   3.0,   4.0,   5.0,
+        # Waist (12-14) — yaw(-), roll(-), pitch(+)
+        -12.0, -13.0,  14.0,
+        # Left arm (15-21) <- Right arm (22-28), shoulder_roll(-)
+        22.0, -23.0,  24.0,  25.0,  26.0,  27.0,  28.0,
+        # Right arm (22-28) <- Left arm (15-21), shoulder_roll(-)
+        15.0, -16.0,  17.0,  18.0,  19.0,  20.0,  21.0,
+    )
   else:
     raise ValueError(f"Unsupported env: {env_name}")
 

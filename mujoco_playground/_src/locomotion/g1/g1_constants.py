@@ -25,6 +25,7 @@ FEET_ONLY_FLAT_TERRAIN_XML = (
 FEET_ONLY_ROUGH_TERRAIN_XML = (
     ROOT_PATH / "xmls" / "scene_mjx_feetonly_rough_terrain.xml"
 )
+MJX_XML_SENSOR_PATH = FEET_ONLY_FLAT_TERRAIN_XML
 
 
 def task_to_xml(task_name: str) -> epath.Path:
@@ -48,6 +49,11 @@ LEFT_FEET_GEOMS = ["left_foot"]
 RIGHT_FEET_GEOMS = ["right_foot"]
 FEET_GEOMS = LEFT_FEET_GEOMS + RIGHT_FEET_GEOMS
 
+HIP_NAMES = [
+    "left_hip_pitch_link",
+    "right_hip_pitch_link",
+]
+
 ROOT_BODY = "torso_link"
 
 GRAVITY_SENSOR = "upvector"
@@ -56,6 +62,8 @@ GLOBAL_ANGVEL_SENSOR = "global_angvel"
 LOCAL_LINVEL_SENSOR = "local_linvel"
 ACCELEROMETER_SENSOR = "accelerometer"
 GYRO_SENSOR = "gyro"
+
+FEET_POS_SENSOR = [f"{geom}_upvector" for geom in FEET_GEOMS]
 
 RESTRICTED_JOINT_RANGE = (
     # Left leg.
@@ -93,3 +101,36 @@ RESTRICTED_JOINT_RANGE = (
     (-1.61443, 1.61443),
     (-1.61443, 1.61443),
 )
+
+# Observation layout / scaling.
+OBS_W_LOCAL_SCALE = 0.25
+OBS_JOINT_VELS_SCALE = 0.05
+
+OBS_W_LOCAL_DIM = 3
+OBS_G_LOCAL_DIM = 3
+OBS_COMMAND_DIM = 3
+OBS_ANGLES_DIM = 29
+OBS_JOINT_VELS_DIM = 29
+OBS_LAST_ACTION_DIM = 29
+OBS_KIN_REF_DIM = 29
+OBS_GAIT_PHASE_DIM = 2
+
+OBS_W_LOCAL_SLICE = slice(0, 3)
+OBS_G_LOCAL_SLICE = slice(3, 6)
+OBS_COMMAND_SLICE = slice(6, 9)
+OBS_ANGLES_SLICE = slice(9, 38)
+OBS_JOINT_VELS_SLICE = slice(38, 67)
+OBS_LAST_ACTION_SLICE = slice(67, 96)
+OBS_KIN_REF_SLICE = slice(96, 125)
+OBS_GAIT_PHASE_SLICE = slice(125, 127)
+
+OBS_DIM = OBS_GAIT_PHASE_SLICE.stop  # 127
+ACT_DIM = 29
+
+# Anchor / residual paths (reserved for future use).
+ANCHOR_PATH = None
+RESIDUAL_PATH = None
+
+# Pattern generator constants.
+STEP_K = 25
+GAIT_SCALE = 0.3
