@@ -177,6 +177,8 @@ def run_ppo(a0, a1, a2, ar0, suffix):
   training_params.pop("num_eval_envs", None)
 
   def progress(num_steps, metrics):
+    if num_steps == 0:
+      print("JIT_READY", flush=True)
     wandb.log(metrics, step=num_steps)
 
   def noop_policy_params_fn(step, make_policy, params):
@@ -228,6 +230,8 @@ def run_apg(a0, a1, a2, ar0, suffix):
   training_params["randomization_fn"] = None
 
   def progress(num_steps, metrics):
+    if num_steps == 0:
+      print("JIT_READY", flush=True)
     wandb.log(metrics, step=num_steps)
 
   def noop_policy_params_fn(step, make_policy, params):

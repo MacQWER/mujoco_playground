@@ -28,9 +28,11 @@ Usage:
     python learning/launch_sweep.py [--dry_run]
 """
 
+import datetime
 import fcntl
 import itertools
 import json
+import math
 import os
 import select
 import subprocess
@@ -46,11 +48,15 @@ APG_PROJECT = "pushbox-sweep-apg"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 RUNNER = os.path.join(SCRIPT_DIR, "sweep_runner.py")
 
-GPUS = [0, 1, 2, 3]
 # H20 80GB: PPO ~1GB/run, APG ~5GB/run.
-# Leave ~10% headroom.
-PPO_PER_GPU = 72
-APG_PER_GPU = 15
+PPO_MEM_LIMIT = 72
+APG_MEM_LIMIT = 15
+
+_parent_cuda = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+if _parent_cuda:
+  GPUS = [int(x.strip()) for x in _parent_cuda.split(",") if x.strip()]
+else:
+  GPUS = [0, 1, 2, 3]
 
 
 def launch(dry_run=False):
@@ -80,7 +86,6 @@ def launch(dry_run=False):
   ))
   grid = grid[:_MAX_CONFIGS.value]
   print(f"Grid: {len(grid)} combos per algorithm")
-  print(f"Wave size: {_WAVE_SIZE.value}")
   print()
 
   if dry_run:
@@ -92,116 +97,116 @@ def launch(dry_run=False):
 
   log_dir = os.path.join(SCRIPT_DIR, "..", "logs", "sweep")
   os.makedirs(log_dir, exist_ok=True)
+  timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
   algos_to_run = [
-      (algo, project, per_gpu)
-      for algo, project, per_gpu in [
-          ("ppo", PPO_PROJECT, PPO_PER_GPU),
-          ("apg", APG_PROJECT, APG_PER_GPU),
+      (algo, project, mem_limit)
+      for algo, project, mem_limit in [
+          ("ppo", PPO_PROJECT, PPO_MEM_LIMIT),
+          ("apg", APG_PROJECT, APG_MEM_LIMIT),
       ]
       if _ALGORITHM.value is None or algo == _ALGORITHM.value
   ]
 
-  for algo, project, per_gpu in algos_to_run:
+  for algo, project, mem_limit in algos_to_run:
+    per_gpu = min(mem_limit, math.ceil(len(grid) / len(GPUS)))
     print(f"\n{'='*60}")
     print(f"Running {algo.upper()} ({len(grid)} configs)")
+    print(f"  Max concurrent per GPU: {per_gpu}")
     print(f"{'='*60}")
 
+    total = len(grid)
     slots = [[combo] for combo in grid]
-    total_slots = len(grid)
-    wave_size = _WAVE_SIZE.value
+    gpu_slots = {gpu: [] for gpu in GPUS}
+    for slot_id in range(total):
+      gpu_slots[GPUS[slot_id % len(GPUS)]].append(slot_id)
+
+    active = {}  # proc -> {slot_id, gpu, log_fh, phase}
+    gpu_count = {gpu: 0 for gpu in GPUS}
     ok = fail = 0
-    total = total_slots
 
-    for wave_start in range(0, total, wave_size):
-      wave = range(wave_start, min(wave_start + wave_size, total))
-      procs = []
+    def spawn(gpu, slot_id):
+      log_file = os.path.join(log_dir, f"{algo}_{timestamp}_gpu{gpu}_slot{slot_id}.log")
+      cmd = [
+          sys.executable, RUNNER,
+          f"--algorithm={algo}",
+          f"--configs={json.dumps(slots[slot_id])}",
+      ]
+      env = os.environ.copy()
+      env["CUDA_VISIBLE_DEVICES"] = str(gpu)
+      env["WANDB_MODE"] = "online"
+      env["WANDB_PROJECT"] = project
+      env["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+      env["OMP_NUM_THREADS"] = "1"
+      env["MKL_NUM_THREADS"] = "1"
+      env["OPENBLAS_NUM_THREADS"] = "1"
+      env["PYTHONUNBUFFERED"] = "1"
+      proc = subprocess.Popen(
+          cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+      )
+      fd = proc.stdout.fileno()
+      fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+      fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+      log_fh = open(log_file, "w")
+      active[proc] = {"slot": slot_id, "gpu": gpu, "log": log_fh, "phase": "compiling"}
+      gpu_count[gpu] += 1
+      prefix = f"[gpu{gpu}/slot{slot_id}]"
+      print(f"  {prefix} launched (compiling)")
+      return proc
 
-      for slot_id in wave:
-        gpu = slot_id % 4
-        log_file = os.path.join(log_dir, f"{algo}_gpu{gpu}_slot{slot_id}.log")
+    # Seed: launch one process per GPU
+    for gpu in GPUS:
+      if gpu_slots[gpu]:
+        spawn(gpu, gpu_slots[gpu].pop(0))
 
-        cmd = [
-            sys.executable, RUNNER,
-            f"--algorithm={algo}",
-            f"--configs={json.dumps(slots[slot_id])}",
-        ]
-
-        env = os.environ.copy()
-        env["CUDA_VISIBLE_DEVICES"] = str(gpu)
-        env["WANDB_PROJECT"] = project
-        env["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
-        env["OMP_NUM_THREADS"] = "1"
-        env["MKL_NUM_THREADS"] = "1"
-        env["OPENBLAS_NUM_THREADS"] = "1"
-        env["PYTHONUNBUFFERED"] = "1"
-
-        proc = subprocess.Popen(
-            cmd,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-        procs.append((proc, slot_id, gpu, log_file))
-        time.sleep(0.05)
-
-      # Stream output from all subprocesses concurrently using select
-      wave_ok = wave_fail = 0
-      # Make stdout non-blocking
-      for proc, slot_id, gpu, log_file in procs:
-        fd = proc.stdout.fileno()
-        fl = fcntl.fcntl(fd, fcntl.F_GETFL)
-        fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
-
-      # Track open file handles for log writing
-      log_files = {}
-      for proc, slot_id, gpu, log_file in procs:
-        log_files[proc] = open(log_file, "w")
-
-      # Track which processes have finished reading
-      remaining = {proc for proc, _, _, _ in procs}
-
-      while remaining:
-        readable, _, _ = select.select(
-            [proc.stdout for proc in remaining], [], [], 1.0
-        )
+    # Dynamic event loop
+    try:
+      while active:
+        fds = [p.stdout.fileno() for p in active]
+        readable, _, _ = select.select(fds, [], [], 1.0)
         for fd in readable:
-          proc = next(p for p in remaining if p.stdout.fileno() == fd.fileno())
+          proc = next(p for p in active if p.stdout.fileno() == fd)
+          info = active[proc]
           try:
-            data = os.read(fd.fileno(), 65536)
+            data = os.read(fd, 65536)
           except BlockingIOError:
             continue
           if not data:
-            remaining.discard(proc)
+            # Process exited
+            info["log"].close()
+            proc.wait()
+            gpu = info["gpu"]
+            gpu_count[gpu] -= 1
+            if proc.returncode == 0:
+              ok += 1
+            else:
+              fail += 1
+            del active[proc]
+            # Launch next pending on this GPU if any
+            if gpu_slots[gpu]:
+              spawn(gpu, gpu_slots[gpu].pop(0))
             continue
+          # Write output
           text = data.decode("utf-8", errors="replace")
-          for line in text.splitlines(True):
+          info["log"].write(text)
+          info["log"].flush()
+          for line in text.splitlines():
             line = line.rstrip()
-            if not line:
-              continue
-            proc_info = next(
-                (p for p in procs if p[0] is proc), None
-            )
-            if proc_info:
-              _, slot_id, gpu, _ = proc_info
-              prefix = f"[gpu{gpu}/slot{slot_id}]"
-              print(f"  {prefix} {line}")
-            log_files[proc].write(line + "\n")
-            log_files[proc].flush()
-
-      # Close log files and wait for processes
-      for proc, slot_id, gpu, log_file in procs:
-        log_files[proc].close()
-        proc.wait()
-        if proc.returncode == 0:
-          wave_ok += 1
-        else:
-          wave_fail += 1
-        ok += 1 if proc.returncode == 0 else 0
-        fail += 1 if proc.returncode != 0 else 0
-
-      print(f"\n  Wave {wave_start//wave_size + 1}: {wave_ok} OK, {wave_fail} FAIL [{ok}/{total}]\n")
+            if line:
+              print(f"  [gpu{info['gpu']}/slot{info['slot']}] {line}")
+          # Detect JIT completion → launch next on same GPU
+          if b"JIT_READY" in data:
+            info["phase"] = "training"
+            gpu = info["gpu"]
+            if gpu_slots[gpu] and gpu_count[gpu] < per_gpu:
+              time.sleep(0.5)  # small stagger
+              spawn(gpu, gpu_slots[gpu].pop(0))
+    except KeyboardInterrupt:
+      print("\n  Interrupted. Killing remaining processes...")
+      for proc in list(active.keys()):
+        proc.kill()
+      print("  Killed.")
+      return
 
     print(f"  {algo.upper()}: OK={ok}, FAIL={fail}")
 
@@ -214,10 +219,5 @@ _MAX_CONFIGS = flags.DEFINE_integer(
     "max_configs", 128,
     "Limit total configs per algorithm (for testing)",
 )
-_WAVE_SIZE = flags.DEFINE_integer(
-    "wave_size", 8,
-    "Concurrent processes per wave",
-)
-
 if __name__ == "__main__":
   app.run(lambda argv: launch(dry_run=_DRY_RUN.value))
