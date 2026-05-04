@@ -45,11 +45,11 @@ def make_kinematic_ref(sinusoid, step_k, scale=0.3, dt=1/50):
     # Leg block for one leg (6 joints): [hip_pitch, hip_roll, hip_yaw, knee, ankle_pitch, ankle_roll]
     # Only modulate hip_pitch, knee, ankle_pitch; others stay at 0.
     swing_leg_block = jp.concatenate([
-        wave.reshape(step_k, 1),           # hip_pitch
+        -wave.reshape(step_k, 1),         # hip_pitch
         jp.zeros((step_k, 1)),            # hip_roll
         jp.zeros((step_k, 1)),            # hip_yaw
-        wave.reshape(step_k, 1),           # knee
-        jp.zeros((step_k, 1)),            # ankle_pitch
+        wave.reshape(step_k, 1),          # knee
+        jp.zeros((step_k, 1)),         # ankle_pitch
         jp.zeros((step_k, 1)),            # ankle_roll
     ], axis=1)  # (step_k, 6)
 
@@ -322,7 +322,6 @@ def check_phase_alignment(env):
 
     steps = np.arange(env.step_k * 4)
     foot_idx = 0
-    half_cycle = env.step_k
     l_cycle = int(env.l_cycle)
 
     height_target_log = []
@@ -331,18 +330,6 @@ def check_phase_alignment(env):
     kino_thigh_log = []
     swing_mask_l_log = []
     swing_mask_r_log = []
-
-    gait_rew_log = []
-    gait_half_rew_log = []
-    gait_err_log = []
-    gait_half_err_log = []
-
-    feet_traj_err_log = []
-    feet_traj_half_err_log = []
-    feet_traj_pos_err_log = []
-    feet_traj_pos_half_err_log = []
-    feet_traj_vel_err_log = []
-    feet_traj_vel_half_err_log = []
 
     gait_step_log = []
     is_stationary_log = []
@@ -384,28 +371,6 @@ def check_phase_alignment(env):
         _update_foot_cycloid_ref_np(env, info)
         return info
 
-    def foot_traj_terms(data, info):
-        curr_feet = data.geom_xpos[env.feet_inds]
-        ref_pos = info["foot_ref_pos"]
-        swing_mask = info["foot_swing"][:, None]
-        pos_err = np.sum(((curr_feet - ref_pos) * swing_mask) ** 2)
-        vel_err = 0.0
-        if env._foot_linvel_sensor_adr is not None:
-            feet_vel = data.sensordata[env._foot_linvel_sensor_adr]
-            vel_xy = feet_vel[..., :2]
-            ref_v_xy = info["foot_ref_v_xy"]
-            vel_err = np.sum(((vel_xy - ref_v_xy) * swing_mask[:, :2]) ** 2)
-        total_err = pos_err + env._foot_traj_vel_weight * vel_err
-        return float(total_err), float(pos_err), float(vel_err)
-
-    def gait_terms(data, info):
-        foot_z = data.site_xpos[env._feet_site_id][:, 2]
-        contact = 1.0 / (1.0 + np.exp(-(0.025 - foot_z) * 100.0))
-        expected_stance = 1.0 - info["foot_swing"]
-        err = np.sum((contact - expected_stance) ** 2)
-        rew = np.exp(-err / 0.25)
-        return float(rew), float(err)
-
     last_left_target_x = 0.0
 
     print("  Running phase alignment check (%d steps)..." % len(steps))
@@ -414,7 +379,6 @@ def check_phase_alignment(env):
 
         ref_data = ref_data_cache[step_idx]
         info = prepare_info(s, ref_data)
-        half_info = prepare_info(s + half_cycle, ref_data)
 
         gait_step_log.append(info["gait_step"])
         is_stationary_log.append(0.0)
@@ -434,24 +398,8 @@ def check_phase_alignment(env):
         swing_mask_l_log.append(float(info["foot_swing"][0]))
         swing_mask_r_log.append(float(info["foot_swing"][1]))
 
-        gait_rew, gait_err = gait_terms(ref_data, info)
-        gait_half_rew, gait_half_err = gait_terms(ref_data, half_info)
-        gait_rew_log.append(gait_rew)
-        gait_half_rew_log.append(gait_half_rew)
-        gait_err_log.append(gait_err)
-        gait_half_err_log.append(gait_half_err)
-
-        ft_err, ft_pos_err, ft_vel_err = foot_traj_terms(ref_data, info)
-        ft_half_err, ft_pos_half_err, ft_vel_half_err = foot_traj_terms(ref_data, half_info)
-        feet_traj_err_log.append(ft_err)
-        feet_traj_half_err_log.append(ft_half_err)
-        feet_traj_pos_err_log.append(ft_pos_err)
-        feet_traj_pos_half_err_log.append(ft_pos_half_err)
-        feet_traj_vel_err_log.append(ft_vel_err)
-        feet_traj_vel_half_err_log.append(ft_vel_half_err)
-
-    # Plotting (5 subplots).
-    fig, axes = plt.subplots(5, 1, figsize=(14, 18), sharex=True)
+    # Plotting (2 subplots).
+    fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
 
     axes[0].step(steps, is_stationary_log, "r-", where="mid", linewidth=2, label="is_stationary")
     axes[0].plot(steps, gait_step_log, "g-", linewidth=1, label="gait_step")
@@ -475,43 +423,10 @@ def check_phase_alignment(env):
     ax1_twin.set_ylabel("Joint Angle (rad)")
     axes[1].set_title(f"G1 Bipedal Phase Alignment Dashboard (step_k={env.step_k})")
 
-    axes[2].plot(steps, gait_rew_log, color="tab:brown", linewidth=2,
-                 label="gait_phase reward (current)")
-    axes[2].plot(steps, gait_half_rew_log, color="tab:brown", linestyle="--",
-                 linewidth=2, label="gait_phase reward (half-cycle)")
-    axes[2].set_ylabel("Reward")
-    axes[2].set_ylim(-0.05, 1.05)
-
-    axes[3].plot(steps, gait_err_log, color="tab:brown", linewidth=2,
-                 label="gait_phase err (current)")
-    axes[3].plot(steps, gait_half_err_log, color="tab:brown", linestyle="--",
-                 linewidth=2, label="gait_phase err (half-cycle)")
-    axes[3].set_ylabel("Error")
-
-    axes[4].plot(steps, gait_rew_log, color="tab:brown", linewidth=2,
-                 label="gait_phase reward (current)")
-    axes[4].plot(steps, gait_half_rew_log, color="tab:brown", linestyle="--",
-                 linewidth=2, label="gait_phase reward (half-cycle)")
-    axes[4].plot(steps, feet_traj_err_log, color="tab:green", linewidth=2,
-                 label="feet_traj total err (current)")
-    axes[4].plot(steps, feet_traj_half_err_log, color="tab:green", linestyle="--",
-                 linewidth=2, label="feet_traj total err (half-cycle)")
-    axes[4].plot(steps, feet_traj_pos_err_log, color="tab:olive", linewidth=1.5,
-                 alpha=0.85, label="feet_traj pos err (current)")
-    axes[4].plot(steps, feet_traj_pos_half_err_log, color="tab:olive", linestyle="--",
-                 linewidth=1.5, alpha=0.85, label="feet_traj pos err (half-cycle)")
-    axes[4].plot(steps, feet_traj_vel_err_log, color="tab:cyan", linewidth=1.5,
-                 alpha=0.85, label="feet_traj vel err (current)")
-    axes[4].plot(steps, feet_traj_vel_half_err_log, color="tab:cyan", linestyle="--",
-                 linewidth=1.5, alpha=0.85, label="feet_traj vel err (half-cycle)")
-    axes[4].set_ylabel("Reward / Error")
-    axes[4].set_xlabel("Step")
-
     for ax in axes:
         ax.axvspan(0, env.step_k, color="gray", alpha=0.08)
         ax.axvspan(env.step_k, env.step_k * 2, color="green", alpha=0.06)
         ax.grid(True, alpha=0.3)
-        ax.legend(loc="upper left", ncol=2)
 
     lines1, labels1 = axes[1].get_legend_handles_labels()
     lines1b, labels1b = ax1_twin.get_legend_handles_labels()
