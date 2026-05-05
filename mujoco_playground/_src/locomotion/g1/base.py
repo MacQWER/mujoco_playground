@@ -67,9 +67,11 @@ class G1Env(mjx_env.MjxEnv):
 
         # Modify PD gains (only if config provides them).
         if hasattr(config, "Kd") and hasattr(config, "Kp"):
-            self._mj_model.dof_damping[6:] = config.Kd
-            self._mj_model.actuator_gainprm[:, 0] = config.Kp
-            self._mj_model.actuator_biasprm[:, 1] = -config.Kp
+            kp = np.asarray(config.Kp)
+            kd = np.asarray(config.Kd)
+            self._mj_model.dof_damping[6:] = kd
+            self._mj_model.actuator_gainprm[:, 0] = kp
+            self._mj_model.actuator_biasprm[:, 1] = -kp
 
         # Apply foot solimp/solref from config (only if config.env exists).
         if hasattr(config, "env") and hasattr(config.env, "solimp"):

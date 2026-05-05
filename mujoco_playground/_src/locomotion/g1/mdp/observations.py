@@ -16,13 +16,22 @@ def apply_uniform_noise(rng: jax.Array, x: jax.Array, noise_level: float, scale:
 
 
 def base_angular_velocity(data, info, **kwargs) -> jax.Array:
-    del kwargs
+    del info
+    get_gyro = kwargs.get("get_gyro")
+    if get_gyro is not None:
+        return get_gyro(data, "pelvis")
     return data.cvel[1, :3]
 
 
+def base_linear_velocity(data, info, **kwargs) -> jax.Array:
+    del info
+    return kwargs["get_local_linvel"](data, "pelvis")
+
+
 def projected_gravity(data, info, **kwargs) -> jax.Array:
-    del info, kwargs
-    return data.site_xmat[1].T @ jp.array([0, 0, -1])
+    del info
+    pelvis_imu_site_id = kwargs.get("pelvis_imu_site_id", 1)
+    return data.site_xmat[pelvis_imu_site_id].T @ jp.array([0, 0, -1])
 
 
 def joint_positions(data, info, **kwargs) -> jax.Array:
@@ -52,9 +61,6 @@ def kinematic_reference(data, info, **kwargs) -> jax.Array:
 
 
 def gait_phase(data, info, **kwargs) -> jax.Array:
-    l_cycle = kwargs["l_cycle"]
-    is_stationary = info.get("is_stationary", False)
-    step = info["gait_step"]
-    phase = 2.0 * jp.pi * step / l_cycle
-    phase_enc = jp.array([jp.sin(phase), jp.cos(phase)])
-    return jp.where(is_stationary, jp.zeros(2), phase_enc)
+    del data, kwargs
+    phase = info["phase"]
+    return jp.concatenate([jp.cos(phase), jp.sin(phase)])

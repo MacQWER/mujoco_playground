@@ -24,16 +24,18 @@ def default_config() -> config_dict.ConfigDict:
     cfg.env.stationary_cmd_threshold = 0.01
     cfg.env.stationary_w_cmd_threshold = 0.05
 
-    # Observation config (8 terms, 127-D).
+    # Observation config. Match G1JoystickFlatTerrain policy state layout:
+    # linvel(3), gyro(3), gravity(3), command(3), qpos(29), qvel(29),
+    # last_action(29), gait_phase(4) = 103-D.
     cfg.obs = config_dict.ConfigDict()
     cfg.obs.policy_terms = [
-        config_blocks.make_obs_term("base_angular_velocity", "gyro", consts.OBS_W_LOCAL_SCALE),
+        config_blocks.make_obs_term("base_linear_velocity", "linvel", 1.0),
+        config_blocks.make_obs_term("base_angular_velocity", "gyro", 1.0),
         config_blocks.make_obs_term("projected_gravity", "gravity", 1.0),
         config_blocks.make_obs_term("command", None, 1.0),
         config_blocks.make_obs_term("joint_positions", "joint_pos", 1.0),
-        config_blocks.make_obs_term("joint_velocities", "joint_vel", consts.OBS_JOINT_VELS_SCALE),
+        config_blocks.make_obs_term("joint_velocities", "joint_vel", 1.0),
         config_blocks.make_obs_term("last_action", None, 1.0),
-        config_blocks.make_obs_term("kinematic_reference", None, 1.0),
         config_blocks.make_obs_term("gait_phase", None, 1.0),
     ]
 
@@ -53,7 +55,7 @@ def default_config() -> config_dict.ConfigDict:
     cfg.rewards.terms.feet_air_time = config_blocks.make_reward_term("feet_air_time", 2.0)
     cfg.rewards.terms.feet_slip = config_blocks.make_reward_term("feet_slip", -0.25)
     cfg.rewards.terms.feet_height = config_blocks.make_reward_term("feet_height", 0.0)
-    cfg.rewards.terms.feet_phase = config_blocks.make_reward_term("feet_phase", 1.0)
+    cfg.rewards.terms.feet_phase = config_blocks.make_reward_term("feet_phase", 0.0)
     cfg.rewards.terms.feet_traj = config_blocks.make_reward_term("feet_traj", -5.0)
     cfg.rewards.terms.gait_phase_tracking = config_blocks.make_reward_term("gait_phase_tracking", 1.0)
     cfg.rewards.terms.alive = config_blocks.make_reward_term("alive", 0.0)
@@ -74,6 +76,8 @@ def default_config() -> config_dict.ConfigDict:
     cfg.rewards.base_height_target = 0.5
     cfg.rewards.max_contact_force = 500.0
     cfg.rewards.gait_phase_tracking_sigma = 0.25
+    cfg.rewards.collision_margin = 0.04
+    cfg.rewards.collision_temp = 0.01
 
     # Disturbance config.
     cfg.disturbance = config_blocks.get_disturbance_config()

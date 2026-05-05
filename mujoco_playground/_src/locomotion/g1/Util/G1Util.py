@@ -138,7 +138,7 @@ def update_raibert_target(env, data, info):
     info["xy0"] = jp.where(new_step, feet_pos, info["xy0"])
     info["k0"] = jp.where(new_step, s, info["k0"])
 
-    feet_z = data.site_xpos[env._feet_site_id][:, 2]
+    feet_z = data.geom_xpos[env.feet_inds][:, 2]
     info["z0"] = jp.where(new_step, feet_z, info["z0"])
 
 
@@ -272,7 +272,7 @@ def _update_raibert_target_np(env, data, info):
     if new_step:
         info["xy0"] = data.geom_xpos[env.feet_inds][:, :2].copy()
         info["k0"] = s
-        info["z0"] = data.site_xpos[env._feet_site_id][:, 2].copy()
+        info["z0"] = data.geom_xpos[env.feet_inds][:, 2].copy()
 
 
 def _update_foot_cycloid_ref_np(env, info):

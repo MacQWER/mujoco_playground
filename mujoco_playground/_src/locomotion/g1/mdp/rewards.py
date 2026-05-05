@@ -179,6 +179,9 @@ def alive(data, info, cfg, **kwargs):
 
 
 def termination(data, info, cfg, **kwargs):
+    del data, info, cfg
+    if "soft_done" in kwargs:
+        return kwargs["soft_done"]
     return kwargs["done"]
 
 
@@ -188,12 +191,45 @@ def stand_still(data, info, cfg, **kwargs):
     return cost * (cmd_norm < 0.01)
 
 
+def _segment_distance(p0, p1, q0, q1):
+    u = p1 - p0
+    v = q1 - q0
+    w = p0 - q0
+
+    a = jp.sum(u * u, axis=-1)
+    b = jp.sum(u * v, axis=-1)
+    c = jp.sum(v * v, axis=-1)
+    d = jp.sum(u * w, axis=-1)
+    e = jp.sum(v * w, axis=-1)
+    eps = 1e-8
+
+    denom = a * c - b * b
+    s = jp.clip((b * e - c * d) / (denom + eps), 0.0, 1.0)
+    t = jp.clip((b * s + e) / (c + eps), 0.0, 1.0)
+    s = jp.clip((b * t - d) / (a + eps), 0.0, 1.0)
+
+    closest_p = p0 + s[:, None] * u
+    closest_q = q0 + t[:, None] * v
+    return jp.sqrt(jp.sum(jp.square(closest_p - closest_q), axis=-1) + eps)
+
+
 def collision(data, info, cfg, **kwargs):
-    left_hand_sensor_adr = kwargs["left_hand_sensor_adr"]
-    right_hand_sensor_adr = kwargs["right_hand_sensor_adr"]
-    c = data.sensordata[left_hand_sensor_adr] > 0
-    c |= data.sensordata[right_hand_sensor_adr] > 0
-    return jp.any(c)
+    del info
+    geom_pairs = kwargs["hand_thigh_geom_pairs"]
+    radius = kwargs["hand_thigh_capsule_radius"]
+    half_length = kwargs["hand_thigh_capsule_half_length"]
+
+    centers = data.geom_xpos[geom_pairs]
+    axes = data.geom_xmat[geom_pairs, :, 2]
+    p0 = centers[:, 0] - axes[:, 0] * half_length[:, 0:1]
+    p1 = centers[:, 0] + axes[:, 0] * half_length[:, 0:1]
+    q0 = centers[:, 1] - axes[:, 1] * half_length[:, 1:2]
+    q1 = centers[:, 1] + axes[:, 1] * half_length[:, 1:2]
+
+    signed_dist = _segment_distance(p0, p1, q0, q1) - jp.sum(radius, axis=-1)
+    x = (cfg.rewards.collision_margin - signed_dist) / cfg.rewards.collision_temp
+    penalty = jax.nn.softplus(x) * cfg.rewards.collision_temp
+    return jp.sum(penalty)
 
 
 def contact_force(data, info, cfg, **kwargs):
@@ -219,7 +255,7 @@ def joint_deviation_hip(data, info, cfg, **kwargs):
     error = qpos[hip_indices] - default_pose[hip_indices]
     cmd = info["command"]
     weight = jp.where(
-        cmd[1] > 0.1,
+        jp.abs(cmd[1]) > 0.1,
         jp.array([0.0, 1.0, 0.0, 1.0]),
         jp.array([1.0, 1.0, 1.0, 1.0]),
     )

@@ -96,6 +96,7 @@ class G1Joystick2(g1_base.G1Env):
         # Body / geom / site IDs.
         self._torso_body_id = self._mj_model.body(consts.ROOT_BODY).id
         self._torso_mass = self._mj_model.body_subtreemass[self._torso_body_id]
+        self._pelvis_imu_site_id = self._mj_model.site("imu_in_pelvis").id
 
         self._feet_site_id = np.array(
             [self._mj_model.site(name).id for name in consts.FEET_SITES]
@@ -107,6 +108,23 @@ class G1Joystick2(g1_base.G1Env):
         self._feet_geom_id = np.array(
             [self._mj_model.geom(name).id for name in consts.FEET_GEOMS]
         )
+        self._hand_thigh_geom_pairs = jp.array([
+            [
+                self._mj_model.geom("left_hand_collision").id,
+                self._mj_model.geom("left_thigh").id,
+            ],
+            [
+                self._mj_model.geom("right_hand_collision").id,
+                self._mj_model.geom("right_thigh").id,
+            ],
+        ], dtype=jp.int32)
+        hand_thigh_geom_pairs_np = np.array(self._hand_thigh_geom_pairs)
+        self._hand_thigh_capsule_radius = jp.array(
+            self._mj_model.geom_size[hand_thigh_geom_pairs_np, 0]
+        )
+        self._hand_thigh_capsule_half_length = jp.array(
+            self._mj_model.geom_size[hand_thigh_geom_pairs_np, 1]
+        )
 
         # Hip body indices for Raibert.
         self.hip_inds = jp.array(
@@ -114,9 +132,8 @@ class G1Joystick2(g1_base.G1Env):
         )
 
         # Foot geometry indices for feet_traj reward.
-        self.feet_inds = jp.array(
-            [self._mj_model.geom(name).id for name in consts.FEET_GEOMS]
-        )
+        self.feet_inds = jp.array(self._feet_geom_id, dtype=jp.int32)
+        self._feet_geom_size = jp.array(self._mj_model.geom_size[self._feet_geom_id])
 
         # Foot linvel sensor addresses.
         foot_linvel_sensor_adr = []
@@ -188,7 +205,7 @@ class G1Joystick2(g1_base.G1Env):
         self.leg_offsets_x = rel_pos[:, 0]
         self.leg_offsets_y = rel_pos[:, 1]
 
-        foot_pos = d.site_xpos[self._feet_site_id]
+        foot_pos = d.geom_xpos[self.feet_inds]
         base_quat = d.xquat[self._torso_body_id]
         hip_local = jax.vmap(rotate_inv, in_axes=(0, None))(hip_pos - base_pos, base_quat)
         foot_local = jax.vmap(rotate_inv, in_axes=(0, None))(foot_pos - base_pos, base_quat)
@@ -226,8 +243,11 @@ class G1Joystick2(g1_base.G1Env):
     def _get_obs_context(self) -> Dict[str, Any]:
         return {
             "default_ap_pose": self._default_pose,
+            "get_gyro": self.get_gyro,
+            "get_local_linvel": self.get_local_linvel,
             "kin_ref_qpos": self.kinematic_ref_qpos,
             "l_cycle": self.l_cycle,
+            "pelvis_imu_site_id": self._pelvis_imu_site_id,
         }
 
     # ------------------------------------------------------------------
@@ -290,9 +310,11 @@ class G1Joystick2(g1_base.G1Env):
             w_cmd < self._config.env.stationary_w_cmd_threshold
         )
 
-        # Initialize Raibert info.
-        feet_pos = data.geom_xpos[self.feet_inds][:, :2]
-        feet_z = self.get_feet_pos(data)[:, 2]
+        # Initialize Raibert / cycloid references in the same coordinate used by
+        # the feet_traj reward: the foot geom center.
+        feet_pos = data.geom_xpos[self.feet_inds]
+        feet_xy = feet_pos[:, :2]
+        feet_z = feet_pos[:, 2]
 
         state_info = {
             "rng": rng,
@@ -302,18 +324,18 @@ class G1Joystick2(g1_base.G1Env):
             "command": cmd,
             "last_action": jp.zeros(self.mjx_model.nu),
             "feet_air_time": jp.zeros(2),
-            "last_contact": jp.zeros(2, dtype=bool),
+            "last_contact": jp.zeros(2),
             "swing_peak": jp.zeros(2),
             # Raibert / cycloid state.
-            "xy0": feet_pos,
-            "xy*": feet_pos,
+            "xy0": feet_xy,
+            "xy*": feet_xy,
             "k0": jp.array(0, dtype=jp.int32),
             "z0": feet_z,
             "foot_phase": 0.0,
             "foot_swing": jp.zeros(2),
             "foot_ref_xy": jp.zeros((2, 2)),
             "foot_ref_z": jp.zeros(2),
-            "foot_ref_pos": jp.concatenate([feet_pos, feet_z[:, None]], axis=1),
+            "foot_ref_pos": feet_pos,
             "foot_ref_v_xy": jp.zeros((2, 2)),
             # Phase.
             "phase_dt": phase_dt,
@@ -368,14 +390,16 @@ class G1Joystick2(g1_base.G1Env):
         # 3. Physics step.
         data = mjx_env.step(self.mjx_model, state.data, ctrl, self.n_substeps)
 
-        # 4. Contact detection (differentiable, matching Go2 pattern).
-        p_f = data.site_xpos[self._feet_site_id]
-        p_fz = p_f[..., -1]
-        contact = jax.nn.sigmoid((0.025 - p_fz) * 100.0)
+        # 4. Differentiable contact proxy from foot-bottom height.
+        # G1 foot sites are at the ankle/foot frame, unlike Go2 where the foot
+        # site is colocated with the contact geom.  Use the box geom bottom so
+        # the sigmoid tracks floor contact while remaining differentiable.
+        foot_bottom_z = self._get_foot_bottom_z(data)
+        contact = jax.nn.sigmoid((0.005 - foot_bottom_z) * 100.0)
         delta_contact = jax.nn.relu(contact - info["last_contact"])
         first_contact = (info["feet_air_time"] > 0.0) * delta_contact
         info["feet_air_time"] += self.dt
-        info["swing_peak"] = jp.maximum(info["swing_peak"], p_fz)
+        info["swing_peak"] = jp.maximum(info["swing_peak"], foot_bottom_z)
 
         # 5. Gait phase update.
         phase_tp1 = info["phase"] + info["phase_dt"]
@@ -432,6 +456,14 @@ class G1Joystick2(g1_base.G1Env):
         done = done.astype(reward.dtype)
         return self._finalize_step(state, data=data, obs=obs, reward=reward, done=done, info=info)
 
+    def _get_foot_bottom_z(self, data: mjx.Data) -> jax.Array:
+        foot_xmat = data.geom_xmat[self.feet_inds]
+        vertical_radius = jp.sum(
+            jp.abs(foot_xmat[:, 2, :]) * self._feet_geom_size,
+            axis=-1,
+        )
+        return data.geom_xpos[self.feet_inds, 2] - vertical_radius
+
     # ------------------------------------------------------------------
     # Termination.
     # ------------------------------------------------------------------
@@ -462,6 +494,7 @@ class G1Joystick2(g1_base.G1Env):
     # ------------------------------------------------------------------
 
     def _get_reward_kwargs(self, data, action, info, contact, first_contact, done):
+        gravity_torso = self.get_gravity(data, "torso")
         return {
             # Sensor accessors.
             "local_linvel": self.get_local_linvel(data, "pelvis"),
@@ -470,7 +503,7 @@ class G1Joystick2(g1_base.G1Env):
             "global_linvel_pelvis": self.get_global_linvel(data, "pelvis"),
             "global_angvel_torso": self.get_global_angvel(data, "torso"),
             "global_angvel_pelvis": self.get_global_angvel(data, "pelvis"),
-            "gravity_torso": self.get_gravity(data, "torso"),
+            "gravity_torso": gravity_torso,
             # Action.
             "current_action": action,
             # Joint groups.
@@ -484,13 +517,16 @@ class G1Joystick2(g1_base.G1Env):
             "contact": contact,
             "first_contact": first_contact,
             "done": done,
+            "soft_done": jax.nn.sigmoid((0.0 - gravity_torso[-1]) * 100.0),
             # Feet.
             "feet_inds": self.feet_inds,
             "feet_site_id": self._feet_site_id,
             "foot_linvel_sensor_adr": self._foot_linvel_sensor_adr,
-            # Sensors for collision/force.
-            "left_hand_sensor_adr": self._mj_model.sensor_adr[self._left_hand_left_thigh_found_sensor],
-            "right_hand_sensor_adr": self._mj_model.sensor_adr[self._right_hand_right_thigh_found_sensor],
+            # Smooth hand-thigh collision penalty geometry.
+            "hand_thigh_geom_pairs": self._hand_thigh_geom_pairs,
+            "hand_thigh_capsule_radius": self._hand_thigh_capsule_radius,
+            "hand_thigh_capsule_half_length": self._hand_thigh_capsule_half_length,
+            # Sensors for force.
             "mj_model": self.mj_model,
         }
 

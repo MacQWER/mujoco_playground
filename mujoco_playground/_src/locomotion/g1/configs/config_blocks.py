@@ -10,12 +10,21 @@ from ml_collections import config_dict
 
 def get_sim_config() -> config_dict.ConfigDict:
     cfg = config_dict.ConfigDict()
-    cfg.Kp = 75.0
-    cfg.Kd = [2.0, 2.0, 2.0, 2.0, 1.0, 0.2,   # left leg
-              2.0, 2.0, 2.0, 2.0, 1.0, 0.2,   # right leg
-              2.0, 2.0, 2.0,                    # waist
-              2.0, 2.0, 2.0, 2.0, 0.2, 0.2, 0.2,  # left arm
-              2.0, 2.0, 2.0, 2.0, 0.2, 0.2, 0.2]  # right arm
+    # Match the per-actuator gains from g1_mjx_feetonly.xml.
+    cfg.Kp = [
+        75.0, 75.0, 75.0, 75.0, 20.0, 2.0,  # left leg
+        75.0, 75.0, 75.0, 75.0, 20.0, 2.0,  # right leg
+        75.0, 75.0, 75.0,  # waist
+        75.0, 75.0, 75.0, 75.0, 2.0, 2.0, 2.0,  # left arm
+        75.0, 75.0, 75.0, 75.0, 2.0, 2.0, 2.0,  # right arm
+    ]
+    cfg.Kd = [
+        2.0, 2.0, 2.0, 2.0, 1.0, 0.2,  # left leg
+        2.0, 2.0, 2.0, 2.0, 1.0, 0.2,  # right leg
+        2.0, 2.0, 2.0,  # waist
+        2.0, 2.0, 2.0, 2.0, 0.2, 0.2, 0.2,  # left arm
+        2.0, 2.0, 2.0, 2.0, 0.2, 0.2, 0.2,  # right arm
+    ]
     cfg.sim_dt = 0.002
     cfg.ctrl_dt = 0.02
     cfg.episode_length = 1000
@@ -29,7 +38,8 @@ def get_sim_config() -> config_dict.ConfigDict:
 
 def get_env_config() -> config_dict.ConfigDict:
     env = config_dict.ConfigDict()
-    env.impratio = 100
+    # APG default solver/contact settings for G1Joystick2 training.
+    env.impratio = 100.0
     env.iterations = 1
     env.solimp = [0.015, 0.99, 0.031]
     env.solref = [0.02, 1.0]
