@@ -54,6 +54,26 @@ def base_height(data, info, cfg, **kwargs):
     return jp.square(data.qpos[2] - cfg.rewards.base_height_target)
 
 
+def base_height_tracking(data, info, cfg, **kwargs):
+    del info
+    nominal_base_height = kwargs["nominal_base_height"]
+    err = jp.square(data.qpos[2] - nominal_base_height)
+    return jp.exp(-err / cfg.rewards.base_height_sigma)
+
+
+def joint_pose_tracking(data, info, cfg, **kwargs):
+    move_mask = kwargs.get("move_mask", 1.0)
+    kinematic_ref_qpos = kwargs["kinematic_ref_qpos"]
+    l_cycle = kwargs["l_cycle"]
+
+    step_idx = jp.array(info["gait_step"] % l_cycle, dtype=jp.int32)
+    ref_qpos = kinematic_ref_qpos[step_idx][7:]
+    qpos = data.qpos[7:]
+    weights = kwargs["weights"]
+    err = jp.sum(jp.square(qpos - ref_qpos) * weights)
+    return jp.exp(-err / cfg.rewards.joint_pose_tracking_sigma) * move_mask
+
+
 # =========================================================================
 # Energy related rewards
 # =========================================================================

@@ -595,7 +595,107 @@ def check_gait_step_transition(env):
 
 
 # ---------------------------------------------------------------------------
-# 7. Cycloid foot trajectory playback
+# 7. Keyframe visualization
+# ---------------------------------------------------------------------------
+
+def _normalize_keyframe_names(keyframes):
+    valid = ("home", "knees_bent")
+    if isinstance(keyframes, str):
+        if keyframes in ("both", "all"):
+            names = valid
+        else:
+            names = (keyframes,)
+    else:
+        names = tuple(keyframes)
+
+    unknown = [name for name in names if name not in valid]
+    if unknown:
+        raise ValueError(
+            f"Unknown keyframe(s): {unknown}. Expected one of {valid}, "
+            '"both", or "all".'
+        )
+    return names
+
+
+def visualize_keyframes(
+    env,
+    keyframes="both",
+    height=480,
+    width=640,
+    camera="track",
+    show=True,
+    save_path=None,
+    scene_option=None,
+):
+    """Render selected G1 keyframes.
+
+    Args:
+        env: A G1Joystick2-like environment.
+        keyframes: "home", "knees_bent", "both", "all", or an iterable of
+            keyframe names.
+        height: Render height.
+        width: Render width.
+        camera: Camera name. Use None for MuJoCo's free camera.
+        show: Whether to display the rendered image(s) with mediapy.
+        save_path: Optional path. A single keyframe is saved as an image; multiple
+            keyframes are saved as a short video.
+        scene_option: Optional MuJoCo scene option.
+
+    Returns:
+        A dict mapping keyframe name to rendered RGB image.
+    """
+    names = _normalize_keyframe_names(keyframes)
+    renderer = mujoco.Renderer(env.mj_model, height=height, width=width)
+    data = mujoco.MjData(env.mj_model)
+
+    if camera is None:
+        camera_id = -1
+    else:
+        camera_id = mujoco.mj_name2id(
+            env.mj_model, mujoco.mjtObj.mjOBJ_CAMERA, camera
+        )
+        if camera_id < 0:
+            raise ValueError(f"Unknown camera: {camera}")
+
+    frames = {}
+    try:
+        for name in names:
+            key = env.mj_model.keyframe(name)
+            data.qpos[:] = key.qpos
+            data.qvel[:] = 0.0
+            if env.mj_model.nu:
+                data.ctrl[:] = key.ctrl
+            mujoco.mj_forward(env.mj_model, data)
+            renderer.update_scene(
+                data, camera=camera_id, scene_option=scene_option
+            )
+            frames[name] = renderer.render()
+    finally:
+        renderer.close()
+
+    images = list(frames.values())
+    if save_path is not None:
+        if len(images) == 1:
+            media.write_image(save_path, images[0])
+        else:
+            media.write_video(save_path, images, fps=1.0)
+
+    if show:
+        if len(images) == 1:
+            media.show_image(images[0])
+        elif hasattr(media, "show_images"):
+            try:
+                media.show_images(images, titles=list(frames.keys()))
+            except TypeError:
+                media.show_images(images)
+        else:
+            media.show_video(images, fps=1.0, loop=True)
+
+    return frames
+
+
+# ---------------------------------------------------------------------------
+# 8. Cycloid foot trajectory playback
 # ---------------------------------------------------------------------------
 
 def play_cycloid_foot_trajectory(

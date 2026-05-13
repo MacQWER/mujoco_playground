@@ -161,7 +161,7 @@ def brax_apg_config(
       -9.0, 10.0, 11.0,       # RL <- RR
       -6.0, 7.0, 8.0,         # RR <- RL
     )
-  elif env_name in ("G1Joystick2",):
+  elif env_name in ("G1Joystick2", "G1Trot"):
     rl_config.episode_length=1000
     rl_config.policy_updates=256
     rl_config.horizon_length=64
@@ -180,6 +180,9 @@ def brax_apg_config(
         hidden_layer_sizes=(256, 128),
         policy_obs_key="state",
     )
+    if env_name == "G1Trot":
+      rl_config.episode_length=240
+      rl_config.num_evals=32 + 1
     # Symmetry loss for G1Joystick2 policy.
     # Obs layout (103): linvel(3), w(3), g(3), cmd(3), qpos(29),
     #   qvel(29), last_action(29), gait_phase(4)
@@ -416,6 +419,29 @@ def brax_ppo_config(
     rl_config.entropy_cost = 1e-3
     rl_config.num_envs=1024
     rl_config.batch_size=1024
+    rl_config.network_factory = config_dict.create(
+        policy_hidden_layer_sizes=(256, 128),
+        value_hidden_layer_sizes=(512, 256, 128),
+        policy_obs_key="state",
+        value_obs_key="state",
+    )
+
+  elif env_name in ("G1Trot",):
+    rl_config.num_timesteps = 10_000_000
+    rl_config.num_evals = 20
+    rl_config.reward_scaling = 10.0
+    rl_config.episode_length = 240
+    rl_config.normalize_observations = True
+    rl_config.deterministic_eval = True
+    rl_config.action_repeat = 1
+    rl_config.unroll_length = 64
+    rl_config.num_minibatches = 8
+    rl_config.num_updates_per_batch = 8
+    rl_config.discounting = 0.97
+    rl_config.learning_rate = 1e-4
+    rl_config.entropy_cost = 1e-4
+    rl_config.num_envs = 256
+    rl_config.batch_size = 32
     rl_config.network_factory = config_dict.create(
         policy_hidden_layer_sizes=(256, 128),
         value_hidden_layer_sizes=(512, 256, 128),

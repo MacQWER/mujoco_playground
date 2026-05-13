@@ -134,6 +134,30 @@ class G1Joystick2(g1_base.G1Env):
         # Foot geometry indices for feet_traj reward.
         self.feet_inds = jp.array(self._feet_geom_id, dtype=jp.int32)
         self._feet_geom_size = jp.array(self._mj_model.geom_size[self._feet_geom_id])
+        self._foot_capsule_half_length = self._feet_geom_size[:, 0]
+        self._foot_capsule_radius = jp.sqrt(
+            self._feet_geom_size[:, 1] ** 2 + self._feet_geom_size[:, 2] ** 2
+        )
+
+        shin_geom_id = np.array(
+            [
+                self._mj_model.geom("left_shin").id,
+                self._mj_model.geom("right_shin").id,
+            ]
+        )
+        self._shin_geom_id = jp.array(shin_geom_id, dtype=jp.int32)
+        self._shin_capsule_radius = jp.array(
+            self._mj_model.geom_size[shin_geom_id, 0]
+        )
+        self._shin_capsule_half_length = jp.array(
+            self._mj_model.geom_size[shin_geom_id, 1]
+        )
+        self._soft_collision_margin = float(
+            getattr(self._config.rewards, "soft_collision_margin", 0.02)
+        )
+        self._soft_collision_temp = float(
+            getattr(self._config.rewards, "soft_collision_temp", 0.01)
+        )
 
         # Foot linvel sensor addresses.
         foot_linvel_sensor_adr = []
@@ -258,29 +282,29 @@ class G1Joystick2(g1_base.G1Env):
         qpos = self._init_q
         qvel = jp.zeros(self.mjx_model.nv)
 
-        # Randomize x, y position.
-        rng, key = jax.random.split(rng)
-        dxy = jax.random.uniform(key, (2,), minval=-0.5, maxval=0.5)
-        qpos = qpos.at[0:2].set(qpos[0:2] + dxy)
+        # # Randomize x, y position.
+        # rng, key = jax.random.split(rng)
+        # dxy = jax.random.uniform(key, (2,), minval=-0.5, maxval=0.5)
+        # qpos = qpos.at[0:2].set(qpos[0:2] + dxy)
 
-        # Randomize yaw.
-        rng, key = jax.random.split(rng)
-        yaw = jax.random.uniform(key, (1,), minval=-3.14, maxval=3.14)
-        quat = math.axis_angle_to_quat(jp.array([0, 0, 1]), yaw)
-        new_quat = math.quat_mul(qpos[3:7], quat)
-        qpos = qpos.at[3:7].set(new_quat)
+        # # Randomize yaw.
+        # rng, key = jax.random.split(rng)
+        # yaw = jax.random.uniform(key, (1,), minval=-3.14, maxval=3.14)
+        # quat = math.axis_angle_to_quat(jp.array([0, 0, 1]), yaw)
+        # new_quat = math.quat_mul(qpos[3:7], quat)
+        # qpos = qpos.at[3:7].set(new_quat)
 
-        # Randomize joint positions: *U(0.5, 1.5).
-        rng, key = jax.random.split(rng)
-        qpos = qpos.at[7:].set(
-            qpos[7:] * jax.random.uniform(key, (29,), minval=0.5, maxval=1.5)
-        )
+        # # Randomize joint positions: *U(0.5, 1.5).
+        # rng, key = jax.random.split(rng)
+        # qpos = qpos.at[7:].set(
+        #     qpos[7:] * jax.random.uniform(key, (29,), minval=0.5, maxval=1.5)
+        # )
 
-        # Randomize base velocity.
-        rng, key = jax.random.split(rng)
-        qvel = qvel.at[0:6].set(
-            jax.random.uniform(key, (6,), minval=-0.5, maxval=0.5)
-        )
+        # # Randomize base velocity.
+        # rng, key = jax.random.split(rng)
+        # qvel = qvel.at[0:6].set(
+        #     jax.random.uniform(key, (6,), minval=-0.5, maxval=0.5)
+        # )
 
         data = mjx_env.make_data(
             self.mj_model,
@@ -291,6 +315,18 @@ class G1Joystick2(g1_base.G1Env):
             nconmax=self._config.nconmax,
             njmax=self._config.njmax,
         )
+        data = mjx.forward(self.mjx_model, data)
+
+        # Lift the root only for true penetration. Positive contact distances
+        # can appear inside the contact margin and should not push the body down.
+        min_dist = jp.where(
+            data._impl.ncon > 0,
+            jp.min(data._impl.contact.dist),
+            0.0,
+        )
+        penetration = jp.minimum(min_dist, 0.0)
+        qpos = qpos.at[2].set(qpos[2] - penetration)
+        data = data.replace(qpos=qpos)
         data = mjx.forward(self.mjx_model, data)
 
         # Gait phase: freq ~ U(1.25, 1.5) Hz.
@@ -356,6 +392,8 @@ class G1Joystick2(g1_base.G1Env):
             prefix="disturbance",
         )
         state_info = self._sync_info(state_info)
+        self._update_raibert_target(data, state_info)
+        self._update_foot_cycloid_ref(state_info)
 
         metrics = {}
         for k in self._config.rewards.scales.keys():
@@ -369,8 +407,6 @@ class G1Joystick2(g1_base.G1Env):
     # ------------------------------------------------------------------
 
     def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
-        info = state.info
-
         # 1. Disturbance pipeline.
         state = self._run_event_pipeline(
             state,
@@ -400,10 +436,6 @@ class G1Joystick2(g1_base.G1Env):
         first_contact = (info["feet_air_time"] > 0.0) * delta_contact
         info["feet_air_time"] += self.dt
         info["swing_peak"] = jp.maximum(info["swing_peak"], foot_bottom_z)
-
-        # 5. Gait phase update.
-        phase_tp1 = info["phase"] + info["phase_dt"]
-        info["phase"] = jp.fmod(phase_tp1 + jp.pi, 2 * jp.pi) - jp.pi
 
         # 6. Stationary detection and gait_step management.
         cmd_norm = jp.linalg.norm(info["command"][:2])
@@ -464,6 +496,77 @@ class G1Joystick2(g1_base.G1Env):
         )
         return data.geom_xpos[self.feet_inds, 2] - vertical_radius
 
+    def _capsule_segments(
+        self,
+        data: mjx.Data,
+        geom_ids: jax.Array,
+        axis: int,
+        half_lengths: jax.Array,
+    ) -> tuple[jax.Array, jax.Array]:
+        centers = data.geom_xpos[geom_ids]
+        axes = data.geom_xmat[geom_ids, :, axis]
+        return (
+            centers - axes * half_lengths[:, None],
+            centers + axes * half_lengths[:, None],
+        )
+
+    def _segment_distance(
+        self,
+        p0: jax.Array,
+        p1: jax.Array,
+        q0: jax.Array,
+        q1: jax.Array,
+    ) -> jax.Array:
+        u = p1 - p0
+        v = q1 - q0
+        w = p0 - q0
+
+        a = jp.sum(u * u, axis=-1)
+        b = jp.sum(u * v, axis=-1)
+        c = jp.sum(v * v, axis=-1)
+        d = jp.sum(u * w, axis=-1)
+        e = jp.sum(v * w, axis=-1)
+        eps = 1e-8
+
+        denom = a * c - b * b
+        s = jp.clip((b * e - c * d) / (denom + eps), 0.0, 1.0)
+        t = jp.clip((b * s + e) / (c + eps), 0.0, 1.0)
+        s = jp.clip((b * t - d) / (a + eps), 0.0, 1.0)
+
+        closest_p = p0 + s[..., None] * u
+        closest_q = q0 + t[..., None] * v
+        return jp.sqrt(jp.sum(jp.square(closest_p - closest_q), axis=-1) + eps)
+
+    def _get_soft_contact_done(self, data: mjx.Data) -> jax.Array:
+        foot_p0, foot_p1 = self._capsule_segments(
+            data, self.feet_inds, 0, self._foot_capsule_half_length
+        )
+        shin_p0, shin_p1 = self._capsule_segments(
+            data, self._shin_geom_id, 2, self._shin_capsule_half_length
+        )
+
+        foot_foot_clearance = self._segment_distance(
+            foot_p0[0], foot_p1[0], foot_p0[1], foot_p1[1]
+        ) - (self._foot_capsule_radius[0] + self._foot_capsule_radius[1])
+        left_foot_right_shin_clearance = self._segment_distance(
+            foot_p0[0], foot_p1[0], shin_p0[1], shin_p1[1]
+        ) - (self._foot_capsule_radius[0] + self._shin_capsule_radius[1])
+        right_foot_left_shin_clearance = self._segment_distance(
+            foot_p0[1], foot_p1[1], shin_p0[0], shin_p1[0]
+        ) - (self._foot_capsule_radius[1] + self._shin_capsule_radius[0])
+
+        clearances = jp.stack([
+            foot_foot_clearance,
+            left_foot_right_shin_clearance,
+            right_foot_left_shin_clearance,
+        ])
+        return jp.max(
+            jax.nn.sigmoid(
+                (self._soft_collision_margin - clearances)
+                / self._soft_collision_temp
+            )
+        )
+
     # ------------------------------------------------------------------
     # Termination.
     # ------------------------------------------------------------------
@@ -495,6 +598,9 @@ class G1Joystick2(g1_base.G1Env):
 
     def _get_reward_kwargs(self, data, action, info, contact, first_contact, done):
         gravity_torso = self.get_gravity(data, "torso")
+        soft_fall_done = jax.nn.sigmoid((0.0 - gravity_torso[-1]) * 100.0)
+        soft_contact_done = self._get_soft_contact_done(data)
+        move_mask = 1.0 - info["is_stationary"].astype(jp.float32)
         return {
             # Sensor accessors.
             "local_linvel": self.get_local_linvel(data, "pelvis"),
@@ -513,11 +619,15 @@ class G1Joystick2(g1_base.G1Env):
             "weights": self._weights,
             "soft_lowers": self._soft_lowers,
             "soft_uppers": self._soft_uppers,
+            "nominal_base_height": self._nominal_base_height,
+            "kinematic_ref_qpos": self.kinematic_ref_qpos,
+            "l_cycle": self.l_cycle,
+            "move_mask": move_mask,
             # Contact.
             "contact": contact,
             "first_contact": first_contact,
             "done": done,
-            "soft_done": jax.nn.sigmoid((0.0 - gravity_torso[-1]) * 100.0),
+            "soft_done": jp.maximum(soft_fall_done, soft_contact_done),
             # Feet.
             "feet_inds": self.feet_inds,
             "feet_site_id": self._feet_site_id,
@@ -539,6 +649,14 @@ class G1Joystick2(g1_base.G1Env):
 
     def check_gait_step_transition(self):
         g1_utils.check_gait_step_transition(self)
+
+    def visualize_keyframes(self, keyframes="both", **kwargs):
+        return g1_utils.visualize_keyframes(
+            self, keyframes=keyframes, **kwargs
+        )
+
+    def visualize_keyframe(self, keyframe="knees_bent", **kwargs):
+        return self.visualize_keyframes(keyframe, **kwargs)
 
     def play_cycloid_foot_trajectory(self, **kwargs):
         return g1_utils.play_cycloid_foot_trajectory(self, **kwargs)

@@ -41,18 +41,20 @@ def default_config() -> config_dict.ConfigDict:
 
     # Reward config (24 terms, G1 original scales).
     cfg.rewards = config_blocks.get_base_rewards_config()
-    cfg.rewards.terms.tracking_lin_vel = config_blocks.make_reward_term("tracking_lin_vel", 1.0)
-    cfg.rewards.terms.tracking_ang_vel = config_blocks.make_reward_term("tracking_ang_vel", 0.75)
-    cfg.rewards.terms.lin_vel_z = config_blocks.make_reward_term("lin_vel_z", 0.0)
+    cfg.rewards.terms.tracking_lin_vel = config_blocks.make_reward_term("tracking_lin_vel", 3.0)
+    cfg.rewards.terms.tracking_ang_vel = config_blocks.make_reward_term("tracking_ang_vel", 2.0)
+    cfg.rewards.terms.base_height_tracking = config_blocks.make_reward_term("base_height_tracking", 0.5)
+    cfg.rewards.terms.joint_pose_tracking = config_blocks.make_reward_term("joint_pose_tracking", 0.1)
+    cfg.rewards.terms.lin_vel_z = config_blocks.make_reward_term("lin_vel_z", -1.0)
     cfg.rewards.terms.ang_vel_xy = config_blocks.make_reward_term("ang_vel_xy", -0.15)
     cfg.rewards.terms.orientation = config_blocks.make_reward_term("orientation", -2.0)
     cfg.rewards.terms.base_height = config_blocks.make_reward_term("base_height", 0.0)
-    cfg.rewards.terms.torques = config_blocks.make_reward_term("torques", 0.0)
-    cfg.rewards.terms.action_rate = config_blocks.make_reward_term("action_rate", 0.0)
-    cfg.rewards.terms.energy = config_blocks.make_reward_term("energy", 0.0)
+    cfg.rewards.terms.torques = config_blocks.make_reward_term("torques", -0.0002)
+    cfg.rewards.terms.action_rate = config_blocks.make_reward_term("action_rate", -0.01)
+    cfg.rewards.terms.energy = config_blocks.make_reward_term("energy", -0.001)
     cfg.rewards.terms.dof_acc = config_blocks.make_reward_term("dof_acc", 0.0)
     cfg.rewards.terms.feet_clearance = config_blocks.make_reward_term("feet_clearance", 0.0)
-    cfg.rewards.terms.feet_air_time = config_blocks.make_reward_term("feet_air_time", 2.0)
+    cfg.rewards.terms.feet_air_time = config_blocks.make_reward_term("feet_air_time", 0.0)
     cfg.rewards.terms.feet_slip = config_blocks.make_reward_term("feet_slip", -0.25)
     cfg.rewards.terms.feet_height = config_blocks.make_reward_term("feet_height", 0.0)
     cfg.rewards.terms.feet_phase = config_blocks.make_reward_term("feet_phase", 0.0)
@@ -62,7 +64,7 @@ def default_config() -> config_dict.ConfigDict:
     cfg.rewards.terms.stand_still = config_blocks.make_reward_term("stand_still", -1.0)
     cfg.rewards.terms.termination = config_blocks.make_reward_term("termination", -100.0)
     cfg.rewards.terms.collision = config_blocks.make_reward_term("collision", -0.1)
-    cfg.rewards.terms.contact_force = config_blocks.make_reward_term("contact_force", -0.01)
+    cfg.rewards.terms.contact_force = config_blocks.make_reward_term("contact_force", -0.0)
     cfg.rewards.terms.joint_deviation_knee = config_blocks.make_reward_term("joint_deviation_knee", -0.1)
     cfg.rewards.terms.joint_deviation_hip = config_blocks.make_reward_term("joint_deviation_hip", -0.25)
     cfg.rewards.terms.dof_pos_limits = config_blocks.make_reward_term("dof_pos_limits", -1.0)
@@ -72,12 +74,16 @@ def default_config() -> config_dict.ConfigDict:
         cfg.rewards.scales[name] = term.scale
 
     cfg.rewards.tracking_sigma = 0.25
+    cfg.rewards.base_height_sigma = 0.01
+    cfg.rewards.joint_pose_tracking_sigma = 0.5
     cfg.rewards.max_foot_height = 0.15
     cfg.rewards.base_height_target = 0.5
     cfg.rewards.max_contact_force = 500.0
     cfg.rewards.gait_phase_tracking_sigma = 0.25
     cfg.rewards.collision_margin = 0.04
     cfg.rewards.collision_temp = 0.01
+    cfg.rewards.soft_collision_margin = 0.02
+    cfg.rewards.soft_collision_temp = 0.01
 
     # Disturbance config.
     cfg.disturbance = config_blocks.get_disturbance_config()
