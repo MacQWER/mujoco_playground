@@ -51,6 +51,7 @@ if "MUJOCO_GL" not in os.environ:
     os.environ["MUJOCO_GL"] = "egl"
 
 import mediapy as media
+from matplotlib import font_manager
 import matplotlib.pyplot as plt
 import numpy as np
 from ml_collections import config_dict
@@ -81,6 +82,26 @@ logging.set_verbosity(logging.WARNING)
 warnings.filterwarnings("ignore", category=RuntimeWarning, module="jax")
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="jax")
 warnings.filterwarnings("ignore", category=UserWarning, module="absl")
+
+
+def _configure_chinese_plot_font() -> None:
+  """Loads WenQuanYi Zen Hei for Chinese labels in Matplotlib figures."""
+  font_path = os.path.join(
+      os.path.dirname(os.path.dirname(__file__)),
+      "assets",
+      "fonts",
+      "wqy-zenhei.ttc",
+  )
+  if not os.path.exists(font_path):
+    raise FileNotFoundError(
+        "Chinese plot font not found: "
+        f"{font_path}. Expected WenQuanYi Zen Hei at assets/fonts/wqy-zenhei.ttc."
+    )
+
+  font_manager.fontManager.addfont(font_path)
+  plt.rcParams["font.family"] = "sans-serif"
+  plt.rcParams["font.sans-serif"] = ["WenQuanYi Zen Hei", "DejaVu Sans"]
+  plt.rcParams["axes.unicode_minus"] = False
 
 
 _ENV_NAME = flags.DEFINE_string(
@@ -575,6 +596,8 @@ def main(argv):
 
     # Plot gait contact diagram (Gantt chart) if requested
     if _GAIT_DIAGRAM.value and len(contact_history) > 0:
+        _configure_chinese_plot_font()
+
         # Convert contact history to numpy array
         contact_array = jp.stack(contact_history)  # shape: (num_steps, 4)
         contact_array = np.array(contact_array)
