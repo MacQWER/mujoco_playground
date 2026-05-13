@@ -240,7 +240,7 @@ def launch(dry_run=False):
       ]
       env = os.environ.copy()
       env["CUDA_VISIBLE_DEVICES"] = str(gpu)
-      env["WANDB_MODE"] = "online"
+      env["WANDB_MODE"] = "offline"
       env["WANDB_PROJECT"] = project
       env["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
       env["OMP_NUM_THREADS"] = "1"
