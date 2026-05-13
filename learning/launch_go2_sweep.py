@@ -13,7 +13,8 @@
 # limitations under the License.
 """Launch Go2 solimp+solref sweep across GPUs.
 
-Grid: filtered 2x2x3x3 train solimp triples + solref[0] with solimp[0] <= solimp[1].
+Grid: original filtered 2x2x3x3 train solimp triples + solref[0]
+with solimp[0] <= solimp[1], followed by a targeted light27 supplement.
 Eval solimp/solref is fixed in go2_sweep_runner.py.
 
 Usage:
@@ -52,11 +53,41 @@ SOLIMP1_VALUES = [0.5, 0.95]
 SOLIMP2_VALUES = [0.03, 0.001, 0.5]
 SOLREF0_VALUES = [0.1, 0.02, 0.004]
 
+LIGHT27_SOLIMP2_VALUES = [0.006, 0.01, 0.05, 0.1]
+LIGHT27_FULL_PAIRS = [(0.015, 0.5), (0.015, 0.95)]
+LIGHT27_DIAGNOSTIC_PAIR = (0.9, 0.95)
+LIGHT27_DIAGNOSTIC_SOLIMP2_VALUES = [0.1]
+
 _parent_cuda = os.environ.get("CUDA_VISIBLE_DEVICES", "")
 if _parent_cuda:
   GPUS = [int(x.strip()) for x in _parent_cuda.split(",") if x.strip()]
 else:
   GPUS = [0, 1, 2, 3]
+
+
+def build_grid():
+  """Returns base 27 slots followed by targeted light27 supplement slots."""
+  base_grid = [
+      combo
+      for combo in itertools.product(
+          SOLIMP0_VALUES,
+          SOLIMP1_VALUES,
+          SOLIMP2_VALUES,
+          SOLREF0_VALUES,
+      )
+      if combo[0] <= combo[1]
+  ]
+
+  light27_grid = []
+  for sr0 in SOLREF0_VALUES:
+    for s0, s1 in LIGHT27_FULL_PAIRS:
+      for s2 in LIGHT27_SOLIMP2_VALUES:
+        light27_grid.append((s0, s1, s2, sr0))
+    s0, s1 = LIGHT27_DIAGNOSTIC_PAIR
+    for s2 in LIGHT27_DIAGNOSTIC_SOLIMP2_VALUES:
+      light27_grid.append((s0, s1, s2, sr0))
+
+  return base_grid + light27_grid
 
 
 def _find_completed_slots(algo, log_dir):
@@ -99,8 +130,13 @@ def launch(dry_run=False):
   print("=" * 60)
   print(f"PPO Project: {PPO_PROJECT}")
   print(f"APG Project: {APG_PROJECT}")
-  print("Train grid: solimp0=[0.015, 0.9], solimp1=[0.5, 0.95],")
-  print("            solimp2=[0.03, 0.001, 0.5], solref0=[0.1, 0.02, 0.004]")
+  print("Base grid: original 27 configs in slots 0-26.")
+  print(
+      "Light27 supplement: slots 27-53; pairs (0.015,0.5) and "
+      "(0.015,0.95) use solimp2=[0.006,0.01,0.05,0.1], "
+      "pair (0.9,0.95) keeps diagnostic solimp2=[0.1]."
+  )
+  print("solref0=[0.1, 0.02, 0.004]")
   print("Filter: solimp[0] <= solimp[1]")
   algo_name = _ALGORITHM.value or "both"
   print(f"Algorithm: {algo_name.upper()}")
@@ -113,16 +149,7 @@ def launch(dry_run=False):
   if _ALGORITHM.value is None or _ALGORITHM.value == "apg":
     print(f"  APG: {APG_PROJECT}")
 
-  grid = [
-      combo
-      for combo in itertools.product(
-          SOLIMP0_VALUES,
-          SOLIMP1_VALUES,
-          SOLIMP2_VALUES,
-          SOLREF0_VALUES,
-      )
-      if combo[0] <= combo[1]
-  ]
+  grid = build_grid()
   grid = grid[:_MAX_CONFIGS.value]
   print(f"Grid: {len(grid)} combos per algorithm")
   print()

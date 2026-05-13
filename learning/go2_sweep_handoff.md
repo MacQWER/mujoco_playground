@@ -91,6 +91,46 @@ Concurrency:
 
 ## Commands
 
+Dry-run current APG grid with completed slots skipped:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 python learning/launch_go2_sweep.py --dry_run --algo=apg --skip_completed
+```
+
+Current launcher grid keeps the original 27 configs in slots `0-26` and appends
+the targeted light27 supplement in slots `27-53`. With old APG logs present,
+`--skip_completed` should skip slots `0-26` and leave 27 pending APG configs.
+
+Start the APG light27 supplement in the background on four A100s:
+
+```bash
+ts=$(date +%Y%m%d_%H%M%S) && CUDA_VISIBLE_DEVICES=0,1,2,3 nohup python -u learning/launch_go2_sweep.py --algo=apg --skip_completed > logs/go2_sweep/launch_light27_${ts}.out 2>&1 &
+```
+
+If the shell prints something like `[1] 12478`, `[1]` is the shell job id and
+`12478` is the launcher process id.
+
+Follow the launcher log:
+
+```bash
+tail -f logs/go2_sweep/launch_light27_*.out
+```
+
+`tail -f` prints new log lines as they are written. Press `Ctrl-C` to stop
+watching the log; this does not stop the background sweep.
+
+Check which light27 slots have completed:
+
+```bash
+for i in $(seq 27 53); do grep -q "video done" logs/go2_sweep/apg_*_slot${i}.log 2>/dev/null && echo "slot $i done" || echo "slot $i pending/running"; done
+```
+
+Check whether the launcher and runner processes are still alive:
+
+```bash
+ps -f -u $(whoami) | grep -E "launch_go2_sweep|go2_sweep_runner" | grep -v grep
+```
+
 Dry-run APG:
 
 ```bash
