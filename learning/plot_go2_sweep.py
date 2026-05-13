@@ -540,6 +540,225 @@ def plot_softness_rank_vs_reward(results, algo="apg", metric="eval/episode_rewar
     return p
 
 
+def plot_softness_true_spacing_vs_reward(results, algo="apg", metric="eval/episode_reward"):
+    """X = softness rank order, spaced by calibrated penetration gaps."""
+    softness = load_softness()
+    if not softness:
+        return None
+
+    rank_positions = []
+    for key, (rank, pen_m) in softness.items():
+        rank_positions.append((rank, pen_m * 1000, key[3]))
+    if not rank_positions:
+        return None
+
+    softest_pen_mm = max(pen_mm for _, pen_mm, _ in rank_positions)
+    x_by_rank = {
+        rank: softest_pen_mm - pen_mm
+        for rank, pen_mm, _ in rank_positions
+    }
+
+    points = []
+    for r in results:
+        key = _match_key(r)
+        if key in softness and r[metric] is not None:
+            rank, pen_m = softness[key]
+            pen_mm = pen_m * 1000
+            sr_label = _solref_label(r["solref0"])
+            points.append((
+                rank, x_by_rank[rank], pen_mm, r[metric], r["solimp0"],
+                r["solimp1"], r["solimp2"], r["solref0"], sr_label,
+            ))
+
+    if not points:
+        return None
+
+    sr_colors = {
+        "0.1 (soft)": "#d95f02",
+        "0.02 (mid)": "#7570b3",
+        "0.004 (stiff)": "#1b9e77",
+    }
+    sr_value_colors = {
+        0.1: "#d95f02",
+        0.02: "#7570b3",
+        0.004: "#1b9e77",
+    }
+
+    fig, (ax_rank, ax) = plt.subplots(
+        2, 1, figsize=(14, 8), sharex=True, constrained_layout=True,
+        gridspec_kw={"height_ratios": [0.9, 4.0]},
+    )
+
+    sorted_rank_positions = sorted(rank_positions)
+    xs_all = [x_by_rank[rank] for rank, _, _ in sorted_rank_positions]
+    xmin, xmax = min(xs_all), max(xs_all)
+    span = max(xmax - xmin, 1e-6)
+    ax_rank.hlines(0, xmin, xmax, color="#8a8a8a", linewidth=1.0, zorder=1)
+    for rank, _, sr0 in sorted_rank_positions:
+        x = x_by_rank[rank]
+        color = sr_value_colors.get(sr0, "#666666")
+        label_y = 0.22 + 0.09 * ((rank - 1) % 3)
+        ax_rank.vlines(x, 0, label_y - 0.02, color=color, linewidth=0.8, alpha=0.55)
+        ax_rank.scatter([x], [0], c=color, s=28, edgecolors="black",
+                        linewidths=0.25, zorder=3)
+        ax_rank.text(x, label_y, str(rank), ha="center", va="bottom",
+                     fontsize=6.5, rotation=90, color="#333333")
+    ax_rank.set_ylim(-0.08, 0.56)
+    ax_rank.set_yticks([])
+    ax_rank.set_ylabel("rank", rotation=0, labelpad=24)
+    ax_rank.set_title("softness ranks, with spacing from ball-drop penetration gaps")
+    ax_rank.grid(False)
+    for spine in ["left", "right", "top"]:
+        ax_rank.spines[spine].set_visible(False)
+
+    sorted_points = sorted(points, key=lambda p: p[0])
+    ax.plot([p[1] for p in sorted_points], [p[3] for p in sorted_points],
+            color="#666666", linewidth=1, alpha=0.45, zorder=2)
+
+    sr_labels = [p[8] for p in points]
+    for label, color in sr_colors.items():
+        idxs = [i for i, lb in enumerate(sr_labels) if lb == label]
+        if not idxs:
+            continue
+        xs = [points[i][1] for i in idxs]
+        ys = [points[i][3] for i in idxs]
+        ax.scatter(xs, ys, c=color, s=70, alpha=0.85, edgecolors="black",
+                   linewidths=0.3, label=label, zorder=3)
+
+    for rank, x, _, rew, *_ in sorted_points:
+        ax.annotate(f"#{rank}", (x, rew), textcoords="offset points",
+                    xytext=(4, 4), fontsize=6, color="#444444", alpha=0.85)
+
+    ax.set_xlim(xmin - 0.02 * span, xmax + 0.02 * span)
+    ax.set_xlabel("soft → hard distance from rank #1 (mm penetration drop)")
+    ax.set_ylabel(metric)
+    ax.legend(title="train solref[0]", fontsize=8)
+    ax.grid(alpha=0.2)
+    ax.set_title(
+        f"{algo.upper()} Go2 sweep — reward vs softness rank with true spacing"
+    )
+
+    p = os.path.join(FIGURE_DIR, f"{algo}_go2_softness_true_spacing_vs_reward.png")
+    fig.savefig(p)
+    plt.close(fig)
+    return p
+
+
+def _solref_filename_value(sr0):
+    return f"{sr0:g}".replace(".", "p")
+
+
+def plot_softness_true_spacing_by_solref(
+    results, algo="apg", metric="eval/episode_reward"
+):
+    """One true-spacing reward plot per solref[0] value."""
+    softness = load_softness()
+    if not softness:
+        return []
+
+    paths = []
+    sr_colors = {0.1: "#d95f02", 0.02: "#7570b3", 0.004: "#1b9e77"}
+    for sr0 in SOLREF0_VALUES:
+        rank_positions = []
+        for key, (rank, pen_m) in softness.items():
+            if abs(key[3] - sr0) < 1e-9:
+                rank_positions.append((rank, pen_m * 1000))
+        if not rank_positions:
+            continue
+
+        softest_pen_mm = max(pen_mm for _, pen_mm in rank_positions)
+        x_by_rank = {
+            rank: softest_pen_mm - pen_mm
+            for rank, pen_mm in rank_positions
+        }
+
+        points = []
+        for r in results:
+            key = _match_key(r)
+            if key not in softness or r[metric] is None:
+                continue
+            if abs(r["solref0"] - sr0) >= 1e-9:
+                continue
+            rank, pen_m = softness[key]
+            pen_mm = pen_m * 1000
+            points.append((
+                rank, x_by_rank[rank], pen_mm, r[metric], r["solimp0"],
+                r["solimp1"], r["solimp2"],
+            ))
+
+        if not points:
+            continue
+
+        fig, (ax_rank, ax) = plt.subplots(
+            2, 1, figsize=(10, 6.5), sharex=True, constrained_layout=True,
+            gridspec_kw={"height_ratios": [0.9, 4.0]},
+        )
+
+        sorted_rank_positions = sorted(rank_positions)
+        xs_all = [x_by_rank[rank] for rank, _ in sorted_rank_positions]
+        xmin, xmax = min(xs_all), max(xs_all)
+        span = max(xmax - xmin, 1e-6)
+        color = sr_colors[sr0]
+
+        ax_rank.hlines(0, xmin, xmax, color="#8a8a8a", linewidth=1.0, zorder=1)
+        for rank, _ in sorted_rank_positions:
+            x = x_by_rank[rank]
+            label_y = 0.22 + 0.09 * ((rank - 1) % 3)
+            ax_rank.vlines(
+                x, 0, label_y - 0.02, color=color, linewidth=0.8, alpha=0.55
+            )
+            ax_rank.scatter([x], [0], c=color, s=32, edgecolors="black",
+                            linewidths=0.25, zorder=3)
+            ax_rank.text(x, label_y, str(rank), ha="center", va="bottom",
+                         fontsize=7, rotation=90, color="#333333")
+        ax_rank.set_ylim(-0.08, 0.56)
+        ax_rank.set_yticks([])
+        ax_rank.set_ylabel("rank", rotation=0, labelpad=24)
+        ax_rank.set_title(
+            f"softness ranks for train solref[0]={sr0:g}, true penetration spacing"
+        )
+        ax_rank.grid(False)
+        for spine in ["left", "right", "top"]:
+            ax_rank.spines[spine].set_visible(False)
+
+        sorted_points = sorted(points, key=lambda p: p[0])
+        ax.plot([p[1] for p in sorted_points], [p[3] for p in sorted_points],
+                color="#666666", linewidth=1, alpha=0.45, zorder=2)
+        ax.scatter([p[1] for p in sorted_points], [p[3] for p in sorted_points],
+                   c=color, s=75, alpha=0.85, edgecolors="black",
+                   linewidths=0.3, label=_solref_label(sr0), zorder=3)
+
+        for rank, x, pen_mm, rew, s0, s1, s2 in sorted_points:
+            label = f"#{rank}\n[{s0:.3f},{s1:.3f},{s2:.3f}]\n{pen_mm:.1f}mm"
+            ax.annotate(label, (x, rew), textcoords="offset points",
+                        xytext=(5, 5), fontsize=6.5, color="#444444",
+                        alpha=0.85)
+
+        ax.set_xlim(xmin - 0.04 * span, xmax + 0.04 * span)
+        ax.set_xlabel(
+            f"soft → hard distance within solref[0]={sr0:g} "
+            "(mm penetration drop)"
+        )
+        ax.set_ylabel(metric)
+        ax.legend(title="train solref[0]", fontsize=8)
+        ax.grid(alpha=0.2)
+        ax.set_title(
+            f"{algo.upper()} Go2 sweep — reward vs true-spaced softness "
+            f"(solref[0]={sr0:g})"
+        )
+
+        sr_name = _solref_filename_value(sr0)
+        p = os.path.join(
+            FIGURE_DIR,
+            f"{algo}_go2_softness_true_spacing_solref_{sr_name}_vs_reward.png",
+        )
+        fig.savefig(p)
+        plt.close(fig)
+        paths.append(p)
+
+    return paths
+
+
 def plot_softness_scatter(results, algo="apg", metric="eval/episode_reward"):
     """Scatter: X = penetration depth (continuous softness), Y = reward."""
     softness = load_softness()
@@ -781,6 +1000,8 @@ def main():
             plot_3d_grid(results, algo, metric),
             # Softness-based plots
             plot_softness_rank_vs_reward(results, algo, metric),
+            plot_softness_true_spacing_vs_reward(results, algo, metric),
+            *plot_softness_true_spacing_by_solref(results, algo, metric),
             plot_softness_scatter(results, algo, metric),
             plot_softness_ranked(results, algo, metric),
             plot_softness_vs_reward_by_solref(results, algo, metric),
