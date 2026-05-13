@@ -11,15 +11,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Sweep runner for solimp/solref parameter sweep on PushBox.
+"""Sweep runner for Go2 solimp+solref parameter sweep.
 
 Each invocation handles a BATCH of configs on a SINGLE GPU,
 running them sequentially. JAX persistent cache ensures compilation
 happens once per architecture.
 
 Usage:
-    CUDA_VISIBLE_DEVICES=0 WANDB_PROJECT=pushbox-sweep-ppo \
-        python learning/sweep_runner.py --configs '[[0.0,0.0,0.0,0.0],...]'
+    CUDA_VISIBLE_DEVICES=0 WANDB_PROJECT=go2-sweep-ppo \
+        python learning/go2_sweep_runner.py --configs '[[0.015,0.5,0.001,0.02],...]'
 """
 
 import copy
@@ -62,29 +62,56 @@ _apg_networks = None
 
 from mujoco_playground import registry
 from mujoco_playground import wrapper
-from mujoco_playground.config import dm_control_suite_params
+from mujoco_playground.config import locomotion_params
 import wandb
 
 warnings.filterwarnings("ignore")
 logging.set_verbosity(logging.WARNING)
 
-BASE_SOLIMP = [0.01, 0.50, 0.030]
-HIGH_SOLIMP = [0.90, 0.95, 0.001]
-BASE_SOLREF0 = 0.004
-HIGH_SOLREF0 = 0.02
-
+ENV_NAME = "Go2Joystick2"
 EVAL_SOLIMP = [0.9, 0.95, 0.001]
 EVAL_SOLREF = [0.004, 1.0]
+EVAL_ITERATIONS = 100
+FIXED_CMD = jp.array([0.5, 0.0, 0.0])
 
 
-def build_params(a0, a1, a2, ar0):
-  solimp = [
-      (1 - a0) * BASE_SOLIMP[0] + a0 * HIGH_SOLIMP[0],
-      (1 - a1) * BASE_SOLIMP[1] + a1 * HIGH_SOLIMP[1],
-      (1 - a2) * BASE_SOLIMP[2] + a2 * HIGH_SOLIMP[2],
-  ]
-  solref = [(1 - ar0) * BASE_SOLREF0 + ar0 * HIGH_SOLREF0, 1.0]
+def build_params(s0, s1, s2, sr0):
+  solimp = [float(s0), float(s1), float(s2)]
+  if solimp[0] > solimp[1]:
+    raise ValueError(f"Invalid solimp, expected solimp[0] <= solimp[1]: {solimp}")
+  solref = [float(sr0), 1.0]
   return solimp, solref
+
+
+class FixedCommandEnv:
+  """Wraps an eval env to force a fixed command on every step."""
+
+  def __init__(self, env, command):
+    self._env = env
+    self._cmd = command
+    for attr in ("dt", "observation_size", "action_size", "_config", "mj_model"):
+      if hasattr(env, attr):
+        object.__setattr__(self, attr, getattr(env, attr))
+
+  def reset(self, rng):
+    state = self._env.reset(rng)
+    return self._fix(state)
+
+  def step(self, state, action):
+    state = self._env.step(self._fix(state), action)
+    return self._fix(state)
+
+  def render(self, *args, **kwargs):
+    return self._env.render(*args, **kwargs)
+
+  def _fix(self, state):
+    info = dict(state.info)
+    info["command"] = self._cmd
+    obs = state.obs
+    if isinstance(obs, dict) and "state" in obs:
+      obs = dict(obs)
+      obs["state"] = obs["state"].at[6:9].set(self._cmd)
+    return state.replace(info=info, obs=obs)
 
 
 def _import_ppo():
@@ -113,13 +140,25 @@ def _render_video(eval_env, make_inference_fn, params, suffix, algorithm):
   jit_reset = jax.jit(eval_env.reset)
   jit_step = jax.jit(eval_env.step)
 
+  def set_cmd(state, cmd):
+    new_info = state.info.copy()
+    new_info["command"] = cmd
+    new_obs = state.obs
+    if isinstance(new_obs, dict) and "state" in new_obs:
+      new_obs = new_obs.copy()
+      new_obs["state"] = new_obs["state"].at[6:9].set(cmd)
+    return state.replace(info=new_info, obs=new_obs)
+
   rng = jax.random.PRNGKey(0)
   state = jit_reset(rng)
+  target_command = jp.array([0.5, 0.0, 0.0])
+  state = set_cmd(state, target_command)
   rollout = []
-  for _ in range(256):  # PushBox episode_length
+  for _ in range(eval_env._config.episode_length):  # pylint: disable=protected-access
     act_rng, rng = jax.random.split(rng)
     act = jit_inference_fn(state.obs, act_rng)[0]
     state = jit_step(state, act)
+    state = set_cmd(state, target_command)
     rollout.append(state)
 
   render_every = 2
@@ -127,7 +166,7 @@ def _render_video(eval_env, make_inference_fn, params, suffix, algorithm):
   traj = rollout[::render_every]
   frames = eval_env.render(traj, height=480, width=640, camera="track")
 
-  video_dir = os.path.join("logs", "sweep", "videos", algorithm)
+  video_dir = os.path.join("logs", "go2_sweep", "videos", algorithm)
   os.makedirs(video_dir, exist_ok=True)
   video_path = os.path.join(video_dir, f"rollout-{algorithm}-{suffix}.mp4")
   media.write_video(video_path, frames, fps=fps)
@@ -154,25 +193,27 @@ def _render_video(eval_env, make_inference_fn, params, suffix, algorithm):
   return max_penetration
 
 
-def run_ppo(a0, a1, a2, ar0, suffix):
+def run_ppo(s0, s1, s2, sr0, suffix):
   print(f"  > import ppo ...")
   ppo_train, ppo_networks = _import_ppo()
-  solimp, solref = build_params(a0, a1, a2, ar0)
+  solimp, solref = build_params(s0, s1, s2, sr0)
 
-  env_cfg = registry.get_default_config("PushBox")
+  env_cfg = registry.get_default_config(ENV_NAME)
   env_cfg["impl"] = "jax"
   train_env_cfg = copy.deepcopy(env_cfg)
-  train_env_cfg.solimp = solimp
-  train_env_cfg.solref = solref
+  train_env_cfg.env.solimp = solimp
+  train_env_cfg.env.solref = solref
+  train_env_cfg.env.iterations = EVAL_ITERATIONS
   eval_env_cfg = copy.deepcopy(env_cfg)
-  eval_env_cfg.solimp = EVAL_SOLIMP
-  eval_env_cfg.solref = EVAL_SOLREF
+  eval_env_cfg.env.solimp = EVAL_SOLIMP
+  eval_env_cfg.env.solref = EVAL_SOLREF
+  eval_env_cfg.env.iterations = EVAL_ITERATIONS
 
-  ppo_params = dm_control_suite_params.brax_ppo_config("PushBox", "jax")
+  ppo_params = locomotion_params.brax_ppo_config(ENV_NAME, "jax")
 
   print(f"  > load env ...")
-  env = registry.load("PushBox", config=train_env_cfg)
-  eval_env = registry.load("PushBox", config=eval_env_cfg)
+  env = registry.load(ENV_NAME, config=train_env_cfg)
+  eval_env = registry.load(ENV_NAME, config=eval_env_cfg)
 
   nf_kwargs = dict(ppo_params.network_factory)
   network_factory = functools.partial(ppo_networks.make_ppo_networks, **nf_kwargs)
@@ -212,25 +253,26 @@ def run_ppo(a0, a1, a2, ar0, suffix):
   print(f"  > video done (max penetration: {max_penetration:.6f})")
 
 
-def run_apg(a0, a1, a2, ar0, suffix):
+def run_apg(s0, s1, s2, sr0, suffix):
   print(f"  > import apg ...")
   apg_train, apg_networks = _import_apg()
-  solimp, solref = build_params(a0, a1, a2, ar0)
+  solimp, solref = build_params(s0, s1, s2, sr0)
 
-  env_cfg = registry.get_default_config("PushBox")
+  env_cfg = registry.get_default_config(ENV_NAME)
   env_cfg["impl"] = "jax"
   train_env_cfg = copy.deepcopy(env_cfg)
-  train_env_cfg.solimp = solimp
-  train_env_cfg.solref = solref
+  train_env_cfg.env.solimp = solimp
+  train_env_cfg.env.solref = solref
   eval_env_cfg = copy.deepcopy(env_cfg)
-  eval_env_cfg.solimp = EVAL_SOLIMP
-  eval_env_cfg.solref = EVAL_SOLREF
+  eval_env_cfg.env.solimp = EVAL_SOLIMP
+  eval_env_cfg.env.solref = EVAL_SOLREF
+  eval_env_cfg.env.iterations = EVAL_ITERATIONS
 
-  apg_params = dm_control_suite_params.brax_apg_config("PushBox")
+  apg_params = locomotion_params.brax_apg_config(ENV_NAME)
 
   print(f"  > load env ...")
-  env = registry.load("PushBox", config=train_env_cfg)
-  eval_env = registry.load("PushBox", config=eval_env_cfg)
+  env = registry.load(ENV_NAME, config=train_env_cfg)
+  eval_env = registry.load(ENV_NAME, config=eval_env_cfg)
 
   training_params = dict(apg_params)
   training_params.pop("network_factory", None)
@@ -270,7 +312,7 @@ def run_apg(a0, a1, a2, ar0, suffix):
 def main(argv):
   del argv
   configs = json.loads(_CONFIGS.value)
-  project = os.environ.get("WANDB_PROJECT", "pushbox-sweep")
+  project = os.environ.get("WANDB_PROJECT", "go2-sweep")
   algorithm = _ALGORITHM.value
 
   # Random delay (0-5s) to stagger JIT compilation across processes.
@@ -280,28 +322,30 @@ def main(argv):
 
   print(f"[{algorithm}] {len(configs)} configs (staggered by {delay:.1f}s)")
 
-  for i, (a0, a1, a2, ar0) in enumerate(configs):
-    solimp, solref = build_params(a0, a1, a2, ar0)
-    suffix = f"a0{a0:.1f}_a1{a1:.1f}_a2{a2:.1f}_ar0{ar0:.1f}"
+  for i, (s0, s1, s2, sr0) in enumerate(configs):
+    solimp, solref = build_params(s0, s1, s2, sr0)
+    suffix = f"s0{s0:.3f}_s1{s1:.3f}_s2{s2:.3f}_sr{sr0:.3f}"
     t0 = time.time()
     print(f"[{i+1}/{len(configs)}] {suffix} (started at {time.strftime('%H:%M:%S')})")
 
-    wandb.init(project=project, name=f"PushBox-{suffix}", config={
-        "a0": float(a0), "a1": float(a1), "a2": float(a2), "ar0": float(ar0),
+    wandb.init(project=project, name=f"{ENV_NAME}-{suffix}", config={
+        "env_name": ENV_NAME,
+        "solimp0": float(s0), "solimp1": float(s1), "solimp2": float(s2),
+        "solref0": float(sr0),
         "train_solimp": solimp, "train_solref": solref,
         "eval_solimp": EVAL_SOLIMP, "eval_solref": EVAL_SOLREF,
     })
 
     if algorithm == "ppo":
-      run_ppo(a0, a1, a2, ar0, suffix)
+      run_ppo(s0, s1, s2, sr0, suffix)
     else:
-      run_apg(a0, a1, a2, ar0, suffix)
+      run_apg(s0, s1, s2, sr0, suffix)
 
     print(f"  done ({time.time() - t0:.1f}s)")
 
 
 _ALGORITHM = flags.DEFINE_string("algorithm", "ppo", "ppo or apg")
-_CONFIGS = flags.DEFINE_string("configs", "[]", "JSON list of [a0,a1,a2,ar0]")
+_CONFIGS = flags.DEFINE_string("configs", "[]", "JSON list of [solimp0,solimp1,solimp2,solref0]")
 
 if __name__ == "__main__":
   app.run(main)

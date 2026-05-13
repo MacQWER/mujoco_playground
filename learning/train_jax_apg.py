@@ -579,8 +579,18 @@ def main(argv):
         contact_array = jp.stack(contact_history)  # shape: (num_steps, 4)
         contact_array = np.array(contact_array)
 
+        # Save raw contact data
+        if _SUFFIX.value is not None:
+            data_name = f"gait_data-{_SUFFIX.value}.npz"
+        else:
+            data_name = "gait_data.npz"
+        dt_val = float(eval_env.dt)
+        time_steps_raw = np.arange(len(contact_array)) * dt_val
+        np.savez(data_name, contact=contact_array, time=time_steps_raw, dt=dt_val)
+        print(f"Raw gait data saved as '{data_name}'.")
+
         # Foot names
-        foot_names = ["FL (Front Left)", "FR (Front Right)", "RL (Rear Left)", "RR (Rear Right)"]
+        foot_names = ["FL (左前足)", "FR (右前足)", "RL (左后足)", "RR (右后足)"]
 
         # Create gait diagram
         fig, ax = plt.subplots(figsize=(12, 4))
@@ -601,7 +611,7 @@ def main(argv):
                 where=stance_mask,
                 color='steelblue',
                 alpha=0.8,
-                label='Stance (Contact)' if foot_idx == 0 else None
+                label='支撑相 (触地)' if foot_idx == 0 else None
             )
 
             # Draw horizontal line for the foot track
@@ -612,15 +622,15 @@ def main(argv):
         ax.set_yticklabels(foot_names)
         ax.set_ylim(0, 4)
         ax.set_xlim(0, time_steps[-1])
-        ax.set_xlabel('Time (seconds)', fontsize=12)
-        ax.set_ylabel('Foot', fontsize=12)
-        ax.set_title('Go2 Gait Contact Diagram', fontsize=14)
+        ax.set_xlabel('时间 (秒)', fontsize=12)
+        ax.set_ylabel('足部', fontsize=12)
+        ax.set_title('Go2 步态接触图', fontsize=14)
         ax.legend(loc='upper right')
         ax.grid(True, axis='x', alpha=0.3)
 
         # Add stride frequency annotation if gait is periodic
         ax.annotate(
-            f'Episode length: {time_steps[-1]:.2f}s\nFPS: {fps:.1f}',
+            f'回合时长: {time_steps[-1]:.2f}秒\nFPS: {fps:.1f}',
             xy=(0.02, 0.98),
             xycoords='axes fraction',
             fontsize=10,

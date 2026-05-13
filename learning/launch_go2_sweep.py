@@ -11,21 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Launch solimp/solref sweep across 4 GPUs.
+"""Launch Go2 solimp+solref sweep across GPUs.
 
-Grid: 5×5×5×4 = 500 combos per algorithm, 1000 total.
-PPO project: pushbox-sweep-ppo
-APG project: pushbox-sweep-apg
-
-Each GPU runs 72 concurrent subprocesses, each processing 4-5 configs.
-Total: 288 concurrent processes for PPO, 60 for APG.
-
-PPO: ~1GB per subprocess (num_envs=256), 80GB/1GB ≈ 72.
-APG: ~5GB per subprocess (num_envs=32), 80GB/5GB ≈ 15.
+Grid: filtered 2x2x3x3 train solimp triples + solref[0] with solimp[0] <= solimp[1].
+Eval solimp/solref is fixed in go2_sweep_runner.py.
 
 Usage:
     cd /data/mujoco_playground
-    python learning/launch_sweep.py [--dry_run]
+    python learning/launch_go2_sweep.py [--dry_run]
 """
 
 import datetime
@@ -43,15 +36,21 @@ import time
 from absl import app
 from absl import flags
 
-PPO_PROJECT = "pushbox-sweep-ppo"
-APG_PROJECT = "pushbox-sweep-apg"
+PPO_PROJECT = "go2-sweep-ppo"
+APG_PROJECT = "go2-sweep-apg"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-RUNNER = os.path.join(SCRIPT_DIR, "sweep_runner.py")
+RUNNER = os.path.join(SCRIPT_DIR, "go2_sweep_runner.py")
+LOG_DIR = os.path.join(SCRIPT_DIR, "..", "logs", "go2_sweep")
 
-# H20 80GB: PPO ~1GB/run, APG ~5GB/run.
-PPO_MEM_LIMIT = 72
-APG_MEM_LIMIT = 15
+# Go2 is heavy enough that each GPU should run only one training process.
+PPO_MEM_LIMIT = 1
+APG_MEM_LIMIT = 1
+
+SOLIMP0_VALUES = [0.015, 0.9]
+SOLIMP1_VALUES = [0.5, 0.95]
+SOLIMP2_VALUES = [0.03, 0.001, 0.5]
+SOLREF0_VALUES = [0.1, 0.02, 0.004]
 
 _parent_cuda = os.environ.get("CUDA_VISIBLE_DEVICES", "")
 if _parent_cuda:
@@ -96,12 +95,13 @@ def _format_slots(slot_ids):
 
 def launch(dry_run=False):
   print("=" * 60)
-  print("PushBox Solimp/Solref Sweep Launcher")
+  print("Go2 Solimp Sweep Launcher")
   print("=" * 60)
   print(f"PPO Project: {PPO_PROJECT}")
   print(f"APG Project: {APG_PROJECT}")
-  print(f"Grid: 4×4×4×2 = {4*4*4*2} combos per algorithm")
-  print(f"Total runs per algo: {4*4*4*2}")
+  print("Train grid: solimp0=[0.015, 0.9], solimp1=[0.5, 0.95],")
+  print("            solimp2=[0.03, 0.001, 0.5], solref0=[0.1, 0.02, 0.004]")
+  print("Filter: solimp[0] <= solimp[1]")
   algo_name = _ALGORITHM.value or "both"
   print(f"Algorithm: {algo_name.upper()}")
   print(f"GPUs: {GPUS}")
@@ -113,17 +113,21 @@ def launch(dry_run=False):
   if _ALGORITHM.value is None or _ALGORITHM.value == "apg":
     print(f"  APG: {APG_PROJECT}")
 
-  grid = list(itertools.product(
-      [i / 3 for i in range(4)],  # a0
-      [i / 3 for i in range(4)],  # a1
-      [i / 3 for i in range(4)],  # a2
-      [i / 1 for i in range(2)],  # ar0
-  ))
+  grid = [
+      combo
+      for combo in itertools.product(
+          SOLIMP0_VALUES,
+          SOLIMP1_VALUES,
+          SOLIMP2_VALUES,
+          SOLREF0_VALUES,
+      )
+      if combo[0] <= combo[1]
+  ]
   grid = grid[:_MAX_CONFIGS.value]
   print(f"Grid: {len(grid)} combos per algorithm")
   print()
 
-  log_dir = os.path.join(SCRIPT_DIR, "..", "logs", "sweep")
+  log_dir = LOG_DIR
   all_slots = list(enumerate(grid))
 
   algos_to_run = [
@@ -137,7 +141,7 @@ def launch(dry_run=False):
 
   if dry_run:
     print("DRY RUN: not launching.")
-    for algo, _, _ in algos_to_run:
+    for algo, _, mem_limit in algos_to_run:
       completed_slots = _find_completed_slots(algo, log_dir)
       if _SKIP_COMPLETED.value:
         pending_slots = [
@@ -149,15 +153,16 @@ def launch(dry_run=False):
         pending_slots = all_slots
 
       print(f"\n{algo.upper()}: {len(pending_slots)}/{len(grid)} pending")
+      per_gpu = min(mem_limit, math.ceil(len(pending_slots) / len(GPUS)))
+      print(f"  Max concurrent per GPU: {per_gpu}")
       if _SKIP_COMPLETED.value:
         skipped = [slot_id for slot_id, _ in all_slots if slot_id in completed_slots]
         print(f"  Skipping completed: {len(skipped)}")
         if skipped:
           print(f"  Completed slots: {_format_slots(skipped)}")
       print("  First pending configs:")
-      for slot_id, (a0, a1, a2, ar0) in pending_slots[:10]:
-        suffix = f"a0{a0:.1f}_a1{a1:.1f}_a2{a2:.1f}_ar0{ar0:.1f}"
-        print(f"    slot {slot_id}: {suffix}")
+      for slot_id, (s0, s1, s2, sr0) in pending_slots[:10]:
+        print(f"    slot {slot_id}: solimp=[{s0:.3f}, {s1:.3f}, {s2:.3f}] solref=[{sr0:.3f}, 1.0]")
     return
 
   os.makedirs(log_dir, exist_ok=True)

@@ -15,4 +15,5 @@ mujoco_playground/experimental/learning/check_points/
 *.log
 *.claude
 jit_cache/
+tmp*/
 mjplayground/
