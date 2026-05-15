@@ -14,7 +14,8 @@
 """Launch Go2 solimp+solref sweep across GPUs.
 
 Grid: original filtered 2x2x3x3 train solimp triples + solref[0]
-with solimp[0] <= solimp[1], followed by a targeted light27 supplement.
+with solimp[0] <= solimp[1], followed by targeted light27 and mid42
+supplements.
 Eval solimp/solref is fixed in go2_sweep_runner.py.
 
 Usage:
@@ -58,6 +59,9 @@ LIGHT27_FULL_PAIRS = [(0.015, 0.5), (0.015, 0.95)]
 LIGHT27_DIAGNOSTIC_PAIR = (0.9, 0.95)
 LIGHT27_DIAGNOSTIC_SOLIMP2_VALUES = [0.1]
 
+MID42_SOLIMP0_VALUES = [0.03, 0.1, 0.35, 0.7]
+MID42_SOLIMP2_VALUES = [0.03, 0.1]
+
 _parent_cuda = os.environ.get("CUDA_VISIBLE_DEVICES", "")
 if _parent_cuda:
   GPUS = [int(x.strip()) for x in _parent_cuda.split(",") if x.strip()]
@@ -65,9 +69,9 @@ else:
   GPUS = [0, 1, 2, 3]
 
 
-def build_grid():
-  """Returns base 27 slots followed by targeted light27 supplement slots."""
-  base_grid = [
+def build_base_grid():
+  """Returns the original filtered 27-slot grid."""
+  return [
       combo
       for combo in itertools.product(
           SOLIMP0_VALUES,
@@ -78,6 +82,9 @@ def build_grid():
       if combo[0] <= combo[1]
   ]
 
+
+def build_light27_grid():
+  """Returns the completed light27 solimp[2] supplement grid."""
   light27_grid = []
   for sr0 in SOLREF0_VALUES:
     for s0, s1 in LIGHT27_FULL_PAIRS:
@@ -87,7 +94,26 @@ def build_grid():
     for s2 in LIGHT27_DIAGNOSTIC_SOLIMP2_VALUES:
       light27_grid.append((s0, s1, s2, sr0))
 
-  return base_grid + light27_grid
+  return light27_grid
+
+
+def build_mid42_grid():
+  """Returns intermediate solimp[0] slots appended after light27."""
+  return [
+      combo
+      for combo in itertools.product(
+          MID42_SOLIMP0_VALUES,
+          SOLIMP1_VALUES,
+          MID42_SOLIMP2_VALUES,
+          SOLREF0_VALUES,
+      )
+      if combo[0] <= combo[1]
+  ]
+
+
+def build_grid():
+  """Returns stable base/light27 slots followed by the new mid42 slots."""
+  return build_base_grid() + build_light27_grid() + build_mid42_grid()
 
 
 def _find_completed_slots(algo, log_dir):
@@ -125,16 +151,30 @@ def _format_slots(slot_ids):
 
 
 def launch(dry_run=False):
+  base_count = len(build_base_grid())
+  light27_count = len(build_light27_grid())
+  mid42_count = len(build_mid42_grid())
+  light27_start = base_count
+  light27_end = light27_start + light27_count - 1
+  mid42_start = light27_end + 1
+  mid42_end = mid42_start + mid42_count - 1
+
   print("=" * 60)
   print("Go2 Solimp Sweep Launcher")
   print("=" * 60)
   print(f"PPO Project: {PPO_PROJECT}")
   print(f"APG Project: {APG_PROJECT}")
-  print("Base grid: original 27 configs in slots 0-26.")
+  print(f"Base grid: original {base_count} configs in slots 0-{base_count - 1}.")
   print(
-      "Light27 supplement: slots 27-53; pairs (0.015,0.5) and "
+      f"Light27 supplement: slots {light27_start}-{light27_end}; "
+      "pairs (0.015,0.5) and "
       "(0.015,0.95) use solimp2=[0.006,0.01,0.05,0.1], "
       "pair (0.9,0.95) keeps diagnostic solimp2=[0.1]."
+  )
+  print(
+      f"Mid42 supplement: slots {mid42_start}-{mid42_end}; "
+      "solimp0=[0.03,0.1,0.35,0.7], "
+      "solimp1=[0.5,0.95], solimp2=[0.03,0.1]."
   )
   print("solref0=[0.1, 0.02, 0.004]")
   print("Filter: solimp[0] <= solimp[1]")

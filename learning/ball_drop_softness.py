@@ -12,10 +12,18 @@ import os
 import mujoco
 import numpy as np
 
-SOLIMP0_VALUES = [0.015, 0.9]
+BASE_SOLIMP0_VALUES = [0.015, 0.9]
 SOLIMP1_VALUES = [0.5, 0.95]
-SOLIMP2_VALUES = [0.03, 0.001, 0.5]
+BASE_SOLIMP2_VALUES = [0.03, 0.001, 0.5]
 SOLREF0_VALUES = [0.1, 0.02, 0.004]
+
+LIGHT27_SOLIMP2_VALUES = [0.006, 0.01, 0.05, 0.1]
+LIGHT27_FULL_PAIRS = [(0.015, 0.5), (0.015, 0.95)]
+LIGHT27_DIAGNOSTIC_PAIR = (0.9, 0.95)
+LIGHT27_DIAGNOSTIC_SOLIMP2_VALUES = [0.1]
+
+MID42_SOLIMP0_VALUES = [0.03, 0.1, 0.35, 0.7]
+MID42_SOLIMP2_VALUES = [0.03, 0.1]
 
 # Eval defaults for the ground (fixed, stiff reference surface)
 GROUND_SOLIMP = [0.9, 0.95, 0.001, 0.5, 2]
@@ -62,14 +70,50 @@ def max_penetration(s0, s1, s2, sr0):
     return float(max_pen)
 
 
-def main():
-    grid = [
+def build_base_grid():
+    return [
         combo
         for combo in itertools.product(
-            SOLIMP0_VALUES, SOLIMP1_VALUES, SOLIMP2_VALUES, SOLREF0_VALUES
+            BASE_SOLIMP0_VALUES,
+            SOLIMP1_VALUES,
+            BASE_SOLIMP2_VALUES,
+            SOLREF0_VALUES,
         )
         if combo[0] <= combo[1]
     ]
+
+
+def build_light27_grid():
+    grid = []
+    for sr0 in SOLREF0_VALUES:
+        for s0, s1 in LIGHT27_FULL_PAIRS:
+            for s2 in LIGHT27_SOLIMP2_VALUES:
+                grid.append((s0, s1, s2, sr0))
+        s0, s1 = LIGHT27_DIAGNOSTIC_PAIR
+        for s2 in LIGHT27_DIAGNOSTIC_SOLIMP2_VALUES:
+            grid.append((s0, s1, s2, sr0))
+    return grid
+
+
+def build_mid42_grid():
+    return [
+        combo
+        for combo in itertools.product(
+            MID42_SOLIMP0_VALUES,
+            SOLIMP1_VALUES,
+            MID42_SOLIMP2_VALUES,
+            SOLREF0_VALUES,
+        )
+        if combo[0] <= combo[1]
+    ]
+
+
+def build_grid():
+    return build_base_grid() + build_light27_grid() + build_mid42_grid()
+
+
+def main():
+    grid = build_grid()
 
     print(f"Testing {len(grid)} parameter combinations...")
     print(f"{'solimp0':>10} {'solimp1':>10} {'solimp2':>10} {'solref0':>10} {'penetration_mm':>16}")
@@ -93,7 +137,13 @@ def main():
         print(f"{rank:5d} {s0:10.4f} {s1:10.4f} {s2:10.4f} {sr0:10.4f} {pen * 1000:16.6f}")
 
     # Save CSV for the plot script
-    csv_path = os.path.join(os.path.dirname(__file__), "..", "logs", "go2_sweep", "softness_ranking.csv")
+    csv_path = os.path.join(
+        os.path.dirname(__file__),
+        "..",
+        "logs",
+        "go2_sweep",
+        "softness_ranking_augmented_mid42.csv",
+    )
     os.makedirs(os.path.dirname(csv_path), exist_ok=True)
     with open(csv_path, "w", newline="") as f:
         writer = csv.writer(f)

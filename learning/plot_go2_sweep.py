@@ -21,28 +21,86 @@ LOG_DIR = os.path.join(os.path.dirname(__file__), "..", "logs", "go2_sweep")
 WANDB_DIR = os.path.join(os.path.dirname(__file__), "..", "wandb")
 FIGURE_DIR = os.path.join(LOG_DIR, "figures")
 
-SOLIMP0_VALUES = [0.015, 0.9]
+BASE_SOLIMP0_VALUES = [0.015, 0.9]
+SOLIMP0_VALUES = [0.015, 0.03, 0.1, 0.35, 0.7, 0.9]
 SOLIMP1_VALUES = [0.5, 0.95]
-SOLIMP2_VALUES = [0.03, 0.001, 0.5]
+BASE_SOLIMP2_VALUES = [0.03, 0.001, 0.5]
+SOLIMP2_VALUES = [0.5, 0.1, 0.05, 0.03, 0.01, 0.006, 0.001]
 SOLREF0_VALUES = [0.1, 0.02, 0.004]
 
-SOLIMP2_PLOT_VALUES = [0.5, 0.03, 0.001]  # soft to hard
+LIGHT27_SOLIMP2_VALUES = [0.006, 0.01, 0.05, 0.1]
+LIGHT27_FULL_PAIRS = [(0.015, 0.5), (0.015, 0.95)]
+LIGHT27_DIAGNOSTIC_PAIR = (0.9, 0.95)
+LIGHT27_DIAGNOSTIC_SOLIMP2_VALUES = [0.1]
 
-GRID = [
-    (s0, s1, s2, sr0)
-    for s0, s1, s2, sr0 in itertools.product(
-        SOLIMP0_VALUES, SOLIMP1_VALUES, SOLIMP2_VALUES, SOLREF0_VALUES
-    )
-    if s0 <= s1
+MID42_SOLIMP0_VALUES = [0.03, 0.1, 0.35, 0.7]
+MID42_SOLIMP2_VALUES = [0.03, 0.1]
+
+SOLIMP2_PLOT_VALUES = SOLIMP2_VALUES  # soft to hard
+
+
+def build_base_grid():
+    return [
+        combo
+        for combo in itertools.product(
+            BASE_SOLIMP0_VALUES,
+            SOLIMP1_VALUES,
+            BASE_SOLIMP2_VALUES,
+            SOLREF0_VALUES,
+        )
+        if combo[0] <= combo[1]
+    ]
+
+
+def build_light27_grid():
+    grid = []
+    for sr0 in SOLREF0_VALUES:
+        for s0, s1 in LIGHT27_FULL_PAIRS:
+            for s2 in LIGHT27_SOLIMP2_VALUES:
+                grid.append((s0, s1, s2, sr0))
+        s0, s1 = LIGHT27_DIAGNOSTIC_PAIR
+        for s2 in LIGHT27_DIAGNOSTIC_SOLIMP2_VALUES:
+            grid.append((s0, s1, s2, sr0))
+    return grid
+
+
+def build_mid42_grid():
+    return [
+        combo
+        for combo in itertools.product(
+            MID42_SOLIMP0_VALUES,
+            SOLIMP1_VALUES,
+            MID42_SOLIMP2_VALUES,
+            SOLREF0_VALUES,
+        )
+        if combo[0] <= combo[1]
+    ]
+
+
+GRID = build_base_grid() + build_light27_grid() + build_mid42_grid()
+
+SOLIMP2_TICK_LABELS = [
+    "0.5\nsoft",
+    "0.1",
+    "0.05",
+    "0.03\nmid",
+    "0.01",
+    "0.006",
+    "0.001\nhard",
 ]
-
-SOLIMP2_TICK_LABELS = ["0.5\nsoft", "0.03\nmid", "0.001\nhard"]
 SOLREF0_TICK_LABELS = ["0.1\nsoft", "0.02\nmid", "0.004\nstiff"]
-PAIR_COLORS = ["#1b9e77", "#d95f02", "#7570b3"]
-PAIR_MARKERS = ["o", "s", "^"]
+PAIR_MARKERS = ["o", "s", "^", "D", "P", "X", "v", "<", ">"]
 
 # Softness ranking from ball-drop calibration
-SOFTNESS_CSV = os.path.join(LOG_DIR, "softness_ranking.csv")
+SOFTNESS_CSV_CANDIDATES = [
+    os.path.join(LOG_DIR, "softness_ranking_augmented_mid42.csv"),
+    os.path.join(LOG_DIR, "softness_ranking_augmented_light36.csv"),
+    os.path.join(LOG_DIR, "softness_ranking.csv"),
+]
+SOFTNESS_CSV = next(
+    (path for path in SOFTNESS_CSV_CANDIDATES if os.path.exists(path)),
+    SOFTNESS_CSV_CANDIDATES[-1],
+)
 
 
 def load_results(algo="apg"):
@@ -280,8 +338,19 @@ def plot_heatmap(results, algo="apg", metric="eval/episode_reward"):
                     if match and match[0][metric] is not None:
                         grid[mj, mi] = match[0][metric]
 
-            im = ax.imshow(grid, cmap="RdYlGn", vmin=vmin, vmax=vmax,
-                           origin="lower", extent=[-0.5, 1.5, -0.5, 1.5])
+            im = ax.imshow(
+                grid,
+                cmap="RdYlGn",
+                vmin=vmin,
+                vmax=vmax,
+                origin="lower",
+                extent=[
+                    -0.5,
+                    len(SOLIMP0_VALUES) - 0.5,
+                    -0.5,
+                    len(SOLIMP1_VALUES) - 0.5,
+                ],
+            )
             for mi, s0 in enumerate(SOLIMP0_VALUES):
                 for mj, s1 in enumerate(SOLIMP1_VALUES):
                     if s0 > s1:
@@ -369,7 +438,9 @@ def plot_solimp2_trend(results, algo="apg"):
                             and r[metric] is not None]
                     ys.append(statistics.mean(vals) if vals else np.nan)
                 label = f"si=[{s0:.3f},{s1:.3f}]"
-                ax.plot(x, ys, color=PAIR_COLORS[idx], marker=PAIR_MARKERS[idx],
+                color = plt.cm.tab20(idx % 20)
+                marker = PAIR_MARKERS[idx % len(PAIR_MARKERS)]
+                ax.plot(x, ys, color=color, marker=marker,
                         linewidth=1.8, alpha=0.88, label=label)
 
         # Overall mean per solimp2
@@ -378,20 +449,26 @@ def plot_solimp2_trend(results, algo="apg"):
              if abs(r["solimp2"] - s2) < 1e-9 and r[metric] is not None]
             for s2 in SOLIMP2_PLOT_VALUES
         ]
-        means = [statistics.mean(xs) for xs in grouped]
-        lows = [min(xs) for xs in grouped]
-        highs = [max(xs) for xs in grouped]
+        means = [statistics.mean(xs) if xs else np.nan for xs in grouped]
+        lows = [min(xs) if xs else np.nan for xs in grouped]
+        highs = [max(xs) if xs else np.nan for xs in grouped]
+        valid = ~np.isnan(np.array(means))
 
         ax.fill_between(x, lows, highs, color="#666666", alpha=0.08, zorder=0)
         ax.plot(x, means, color="#111111", marker="D", linewidth=2.4, zorder=3)
-        best_idx = int(np.argmax(means))
-        ax.scatter([best_idx], [means[best_idx]], marker="*", s=160,
-                   color="gold", edgecolors="black", linewidths=0.6, zorder=4)
+        if valid.any():
+            best_idx = int(np.nanargmax(means))
+            ax.scatter([best_idx], [means[best_idx]], marker="*", s=160,
+                       color="gold", edgecolors="black", linewidths=0.6,
+                       zorder=4)
 
         for xi, yi in zip(x, means):
+            if np.isnan(yi):
+                continue
             fmt = "{:.1f}" if metric == "eval/episode_reward" else "{:.0f}"
             ax.annotate(fmt.format(yi), (xi, yi), xytext=(0, 8),
-                        textcoords="offset points", ha="center", fontsize=7, color="#111111")
+                        textcoords="offset points", ha="center", fontsize=7,
+                        color="#111111")
 
         ax.set_xticks(x, SOLIMP2_TICK_LABELS)
         ax.set_xlabel("solimp[2]")
@@ -500,6 +577,10 @@ def plot_softness_rank_vs_reward(results, algo="apg", metric="eval/episode_rewar
     ranks = [p[0] for p in points]
     rewards = [p[1] for p in points]
     sr_labels = [p[6] for p in points]
+    if not points:
+        return None
+    max_rank = max(rank for rank, _ in softness.values())
+    tick_step = max(1, max_rank // 14)
 
     sr_colors = {"0.1 (soft)": "#d95f02", "0.02 (mid)": "#7570b3", "0.004 (stiff)": "#1b9e77"}
 
@@ -528,11 +609,13 @@ def plot_softness_rank_vs_reward(results, algo="apg", metric="eval/episode_rewar
     ax.plot([s[0] for s in sorted_pairs], [s[1] for s in sorted_pairs],
             color="#666666", linewidth=1, alpha=0.5, zorder=2)
 
-    ax.set_xlabel("train-env softness rank  (1 = softest, 27 = hardest)")
+    ax.set_xlabel(
+        f"train-env softness rank  (1 = softest, {max_rank} = hardest)"
+    )
     ax.set_ylabel(metric)
     ax.legend(title="train solref[0]", fontsize=8)
     ax.grid(alpha=0.2)
-    ax.set_xticks(range(1, 28, 2))
+    ax.set_xticks(range(1, max_rank + 1, tick_step))
     ax.set_title(f"{algo.upper()} Go2 sweep — reward vs train-env softness rank  [si0,si1,si2|sr0]")
     p = os.path.join(FIGURE_DIR, f"{algo}_go2_softness_rank_vs_reward.png")
     fig.savefig(p)
