@@ -45,7 +45,10 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 RUNNER = os.path.join(SCRIPT_DIR, "go2_sweep_runner.py")
 LOG_DIR = os.path.join(SCRIPT_DIR, "..", "logs", "go2_sweep")
 
-# Go2 is heavy enough that each GPU should run only one training process.
+# Go2 PPO is lightweight in memory on A100s (~1 GiB/process after JIT), and the
+# launcher only starts the next process on a GPU after the previous one reports
+# JIT_READY.  This keeps JIT compilation serialized while allowing multiple
+# training processes to share the same GPU.
 PPO_MEM_LIMIT = 1
 APG_MEM_LIMIT = 1
 

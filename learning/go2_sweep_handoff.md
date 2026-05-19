@@ -318,6 +318,69 @@ To verify before resuming:
 CUDA_VISIBLE_DEVICES=0,1,2,3 python learning/launch_go2_sweep.py --dry_run --algo=apg --skip_completed
 ```
 
+## 2026-05-17 PPO Missing Slots
+
+PPO currently only has completed logs for slots `0-26`, which are the original
+base grid. The light27 supplement (`27-53`) and mid42 supplement (`54-95`) are
+still missing for PPO. Use `--skip_completed` so the launcher keeps slots `0-26`
+and runs only the missing slots.
+
+Verify the pending PPO schedule first:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 python learning/launch_go2_sweep.py --dry_run --algo=ppo --skip_completed
+```
+
+Expected status before rerunning:
+
+```text
+Grid: 96 combos per algorithm
+PPO: 69/96 pending
+Completed slots: 0-26
+First pending slot: 27
+Last pending slot: 95
+```
+
+Start the missing PPO sweep in the background:
+
+```bash
+mkdir -p logs/go2_sweep_apg && ts=$(date +%Y%m%d_%H%M%S) && CUDA_VISIBLE_DEVICES=0,1,2,3 nohup python -u learning/launch_go2_sweep.py --algo=ppo --skip_completed > logs/go2_sweep_apg/launch_ppo_missing_${ts}.out 2>&1 &
+```
+
+Follow the launcher log:
+
+```bash
+tail -f logs/go2_sweep_apg/launch_ppo_missing_*.out
+```
+
+```bash
+tail -f logs/go2_sweep_apg/launch_ppo_missing_20260518_005552.out
+```
+
+Check launcher/runner processes:
+
+```bash
+ps -f -u $(whoami) | grep -E "launch_go2_sweep|go2_sweep_runner" | grep -v grep
+```
+
+Check completion for the missing PPO slots:
+
+```bash
+for i in $(seq 27 95); do grep -q "video done" logs/go2_sweep/ppo_*_slot${i}.log 2>/dev/null && echo "slot $i done" || echo "slot $i pending/running"; done
+```
+
+After PPO finishes, regenerate the PPO plots and CSV:
+
+```bash
+python -u learning/plot_go2_sweep.py --algo=ppo
+```
+
+Regenerate both APG and PPO plots if needed:
+
+```bash
+python -u learning/plot_go2_sweep.py --algo=both
+```
+
 ## Historical Worktree Notes
 
 At the 2026-05-06 handoff, relevant sweep files were modified/untracked:

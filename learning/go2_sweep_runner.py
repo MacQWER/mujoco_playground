@@ -71,6 +71,7 @@ logging.set_verbosity(logging.WARNING)
 ENV_NAME = "Go2Joystick2"
 EVAL_SOLIMP = [0.9, 0.95, 0.001]
 EVAL_SOLREF = [0.004, 1.0]
+TRAIN_ITERATIONS = 10
 EVAL_ITERATIONS = 100
 FIXED_CMD = jp.array([0.5, 0.0, 0.0])
 
@@ -203,7 +204,7 @@ def run_ppo(s0, s1, s2, sr0, suffix):
   train_env_cfg = copy.deepcopy(env_cfg)
   train_env_cfg.env.solimp = solimp
   train_env_cfg.env.solref = solref
-  train_env_cfg.env.iterations = EVAL_ITERATIONS
+  train_env_cfg.env.iterations = TRAIN_ITERATIONS
   eval_env_cfg = copy.deepcopy(env_cfg)
   eval_env_cfg.env.solimp = EVAL_SOLIMP
   eval_env_cfg.env.solref = EVAL_SOLREF
@@ -263,6 +264,7 @@ def run_apg(s0, s1, s2, sr0, suffix):
   train_env_cfg = copy.deepcopy(env_cfg)
   train_env_cfg.env.solimp = solimp
   train_env_cfg.env.solref = solref
+  train_env_cfg.env.iterations = TRAIN_ITERATIONS
   eval_env_cfg = copy.deepcopy(env_cfg)
   eval_env_cfg.env.solimp = EVAL_SOLIMP
   eval_env_cfg.env.solref = EVAL_SOLREF
@@ -334,6 +336,8 @@ def main(argv):
         "solref0": float(sr0),
         "train_solimp": solimp, "train_solref": solref,
         "eval_solimp": EVAL_SOLIMP, "eval_solref": EVAL_SOLREF,
+        "train_iterations": TRAIN_ITERATIONS,
+        "eval_iterations": EVAL_ITERATIONS,
     })
 
     if algorithm == "ppo":

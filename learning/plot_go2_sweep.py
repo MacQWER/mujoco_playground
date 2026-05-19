@@ -101,11 +101,12 @@ SOFTNESS_CSV = next(
     (path for path in SOFTNESS_CSV_CANDIDATES if os.path.exists(path)),
     SOFTNESS_CSV_CANDIDATES[-1],
 )
+_LEGACY_SUMMARY_CACHE = {}
 
 
 def load_results(algo="apg"):
     pattern = os.path.join(LOG_DIR, f"{algo}_*_gpu*_slot*.log")
-    by_slot = {}
+    latest_logs = {}
     for log_path in sorted(glob.glob(pattern)):
         slot_m = re.search(r"_slot(\d+)", os.path.basename(log_path))
         slot = int(slot_m.group(1))
@@ -119,14 +120,18 @@ def load_results(algo="apg"):
         if "video done" not in text:
             continue
 
-        run_m = re.search(r"runs/([A-Za-z0-9]+)", text)
-        if not run_m:
-            continue
-        wdirs = glob.glob(os.path.join(WANDB_DIR, f"run-*-{run_m.group(1)}"))
-        if not wdirs:
-            continue
-        with open(os.path.join(wdirs[0], "files", "wandb-summary.json")) as f:
-            summary = json.load(f)
+        prev = latest_logs.get(slot)
+        if prev is None or (ts, log_path) > (prev[0], prev[1]):
+            latest_logs[slot] = (ts, log_path, text)
+
+    by_slot = {}
+    for slot in sorted(latest_logs):
+        ts, log_path, text = latest_logs[slot]
+        summary = _load_wandb_summary(text)
+        if not summary:
+            summary = _load_legacy_summary(algo, slot)
+            if not summary:
+                continue
 
         s0, s1, s2, sr0 = GRID[slot]
         record = {
@@ -138,14 +143,137 @@ def load_results(algo="apg"):
             "eval/avg_episode_length": summary.get("eval/avg_episode_length"),
             "eval/episode_ang_vel_xy": summary.get("eval/episode_ang_vel_xy"),
             "eval/episode_action_rate": summary.get("eval/episode_action_rate"),
+            "max_penetration_depth": (
+                summary.get("max_penetration_depth") or _parse_max_penetration(text)
+            ),
         }
-        prev = by_slot.get(slot)
-        if prev is None or (ts, log_path) > (prev.get("_ts", ""), prev.get("_path", "")):
-            record["_ts"] = ts
-            record["_path"] = log_path
-            by_slot[slot] = record
+        record["_ts"] = ts
+        record["_path"] = log_path
+        by_slot[slot] = record
 
     return [by_slot[s] for s in sorted(by_slot)]
+
+
+def _parse_json_value(value):
+    try:
+        return json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return value
+
+
+def _summary_item_key(item):
+    if item.nested_key:
+        return "/".join(item.nested_key)
+    return item.key
+
+
+def _load_wandb_file_summary(wandb_file):
+    """Read the latest summary values from a local offline .wandb file."""
+    try:
+        from wandb.proto import wandb_internal_pb2
+        from wandb.sdk.internal.datastore import DataStore
+    except ImportError:
+        return {}
+
+    summary = {}
+    datastore = DataStore()
+    try:
+        datastore.open_for_scan(wandb_file)
+        while True:
+            data = datastore.scan_data()
+            if data is None:
+                break
+            record = wandb_internal_pb2.Record()
+            record.ParseFromString(data)
+            record_type = record.WhichOneof("record_type")
+            if record_type == "summary":
+                for update in record.summary.update:
+                    key = _summary_item_key(update)
+                    if key:
+                        summary[key] = _parse_json_value(update.value_json)
+            elif record_type == "history":
+                for item in record.history.item:
+                    key = _summary_item_key(item)
+                    if key:
+                        summary[key] = _parse_json_value(item.value_json)
+    except OSError:
+        return {}
+    return summary
+
+
+def _find_wandb_run_dirs(text):
+    """Return candidate local wandb run directories referenced by a log."""
+    run_dirs = []
+
+    run_m = re.search(r"runs/([A-Za-z0-9]+)", text)
+    if run_m:
+        run_id = run_m.group(1)
+        run_dirs.extend(glob.glob(os.path.join(WANDB_DIR, f"run-*-{run_id}")))
+        run_dirs.extend(glob.glob(os.path.join(WANDB_DIR, f"offline-run-*-{run_id}")))
+
+    for run_dir in re.findall(r"Run data is saved locally in ([^\n\r]+)", text):
+        run_dirs.append(run_dir.strip())
+    for run_dir in re.findall(r"wandb sync ([^\n\r]+)", text):
+        run_dirs.append(run_dir.strip())
+
+    seen = set()
+    unique = []
+    for run_dir in run_dirs:
+        run_dir = os.path.abspath(run_dir)
+        if run_dir in seen:
+            continue
+        seen.add(run_dir)
+        unique.append(run_dir)
+    return unique
+
+
+def _load_wandb_summary(text):
+    """Load W&B summary from json summaries or offline .wandb records."""
+    for run_dir in _find_wandb_run_dirs(text):
+        json_path = os.path.join(run_dir, "files", "wandb-summary.json")
+        if os.path.exists(json_path):
+            with open(json_path) as f:
+                return json.load(f)
+
+        wandb_files = glob.glob(os.path.join(run_dir, "run-*.wandb"))
+        for wandb_file in wandb_files:
+            summary = _load_wandb_file_summary(wandb_file)
+            if summary:
+                return summary
+
+    return {}
+
+
+def _parse_max_penetration(text):
+    match = re.search(r"video done \(max penetration: ([0-9.]+)\)", text)
+    if match is None:
+        return None
+    return float(match.group(1))
+
+
+def _load_legacy_summary(algo, slot):
+    """Load metrics for old synced runs whose local W&B summaries are absent."""
+    if algo not in _LEGACY_SUMMARY_CACHE:
+        path = os.path.join(LOG_DIR, f"{algo}_legacy_base27_results.csv")
+        rows_by_slot = {}
+        if os.path.exists(path):
+            with open(path, newline="", encoding="utf-8") as f:
+                for row in csv.DictReader(f):
+                    parsed = {}
+                    for key, value in row.items():
+                        if key in ("path", ""):
+                            parsed[key] = value
+                        elif value == "":
+                            parsed[key] = None
+                        else:
+                            parsed[key] = float(value)
+                    rows_by_slot[int(parsed["slot"])] = parsed
+        _LEGACY_SUMMARY_CACHE[algo] = rows_by_slot
+
+    row = _LEGACY_SUMMARY_CACHE[algo].get(slot)
+    if row is None:
+        return {}
+    return row
 
 
 def save_csv(results, algo="apg"):
@@ -155,7 +283,8 @@ def save_csv(results, algo="apg"):
         "solimp0", "solimp1", "solimp2", "solref0", "slot",
         "eval/episode_reward", "eval/iqm_episode_reward",
         "eval/trimmed_episode_reward", "eval/avg_episode_length",
-        "eval/episode_ang_vel_xy", "eval/episode_action_rate", "path",
+        "eval/episode_ang_vel_xy", "eval/episode_action_rate",
+        "max_penetration_depth", "path",
     ]
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
@@ -624,7 +753,7 @@ def plot_softness_rank_vs_reward(results, algo="apg", metric="eval/episode_rewar
 
 
 def plot_softness_true_spacing_vs_reward(results, algo="apg", metric="eval/episode_reward"):
-    """X = softness rank order, spaced by calibrated penetration gaps."""
+    """X = calibrated max penetration depth, ordered hard to soft."""
     softness = load_softness()
     if not softness:
         return None
@@ -635,12 +764,6 @@ def plot_softness_true_spacing_vs_reward(results, algo="apg", metric="eval/episo
     if not rank_positions:
         return None
 
-    softest_pen_mm = max(pen_mm for _, pen_mm, _ in rank_positions)
-    x_by_rank = {
-        rank: softest_pen_mm - pen_mm
-        for rank, pen_mm, _ in rank_positions
-    }
-
     points = []
     for r in results:
         key = _match_key(r)
@@ -649,7 +772,7 @@ def plot_softness_true_spacing_vs_reward(results, algo="apg", metric="eval/episo
             pen_mm = pen_m * 1000
             sr_label = _solref_label(r["solref0"])
             points.append((
-                rank, x_by_rank[rank], pen_mm, r[metric], r["solimp0"],
+                rank, pen_mm, pen_mm, r[metric], r["solimp0"],
                 r["solimp1"], r["solimp2"], r["solref0"], sr_label,
             ))
 
@@ -673,12 +796,12 @@ def plot_softness_true_spacing_vs_reward(results, algo="apg", metric="eval/episo
     )
 
     sorted_rank_positions = sorted(rank_positions)
-    xs_all = [x_by_rank[rank] for rank, _, _ in sorted_rank_positions]
+    xs_all = [pen_mm for _, pen_mm, _ in sorted_rank_positions]
     xmin, xmax = min(xs_all), max(xs_all)
     span = max(xmax - xmin, 1e-6)
     ax_rank.hlines(0, xmin, xmax, color="#8a8a8a", linewidth=1.0, zorder=1)
-    for rank, _, sr0 in sorted_rank_positions:
-        x = x_by_rank[rank]
+    for rank, pen_mm, sr0 in sorted_rank_positions:
+        x = pen_mm
         color = sr_value_colors.get(sr0, "#666666")
         label_y = 0.22 + 0.09 * ((rank - 1) % 3)
         ax_rank.vlines(x, 0, label_y - 0.02, color=color, linewidth=0.8, alpha=0.55)
@@ -689,12 +812,14 @@ def plot_softness_true_spacing_vs_reward(results, algo="apg", metric="eval/episo
     ax_rank.set_ylim(-0.08, 0.56)
     ax_rank.set_yticks([])
     ax_rank.set_ylabel("rank", rotation=0, labelpad=24)
-    ax_rank.set_title("softness ranks, with spacing from ball-drop penetration gaps")
+    ax_rank.set_title(
+        "softness ranks positioned by ball-drop max penetration (hard -> soft)"
+    )
     ax_rank.grid(False)
     for spine in ["left", "right", "top"]:
         ax_rank.spines[spine].set_visible(False)
 
-    sorted_points = sorted(points, key=lambda p: p[0])
+    sorted_points = sorted(points, key=lambda p: p[1])
     ax.plot([p[1] for p in sorted_points], [p[3] for p in sorted_points],
             color="#666666", linewidth=1, alpha=0.45, zorder=2)
 
@@ -713,12 +838,12 @@ def plot_softness_true_spacing_vs_reward(results, algo="apg", metric="eval/episo
                     xytext=(4, 4), fontsize=6, color="#444444", alpha=0.85)
 
     ax.set_xlim(xmin - 0.02 * span, xmax + 0.02 * span)
-    ax.set_xlabel("soft → hard distance from rank #1 (mm penetration drop)")
+    ax.set_xlabel("ball-drop max penetration depth (mm): hard -> soft")
     ax.set_ylabel(metric)
     ax.legend(title="train solref[0]", fontsize=8)
     ax.grid(alpha=0.2)
     ax.set_title(
-        f"{algo.upper()} Go2 sweep — reward vs softness rank with true spacing"
+        f"{algo.upper()} Go2 sweep — reward vs calibrated softness"
     )
 
     p = os.path.join(FIGURE_DIR, f"{algo}_go2_softness_true_spacing_vs_reward.png")
@@ -731,10 +856,38 @@ def _solref_filename_value(sr0):
     return f"{sr0:g}".replace(".", "p")
 
 
+def _dodged_x_positions(sorted_points, span):
+    """Return lightly dodged x positions for dense scatter readability."""
+    if not sorted_points:
+        return []
+
+    cluster_width = max(0.10, min(0.45, 0.025 * span))
+    dodge_step = max(0.05, min(0.22, 0.012 * span))
+    lanes = np.array([0, -1, 1, -2, 2, -3, 3], dtype=float) * dodge_step
+
+    display_x = [0.0] * len(sorted_points)
+    cluster = [0]
+    for i in range(1, len(sorted_points)):
+        prev_x = sorted_points[i - 1][1]
+        this_x = sorted_points[i][1]
+        if this_x - prev_x <= cluster_width:
+            cluster.append(i)
+            continue
+
+        for lane_i, point_i in enumerate(cluster):
+            display_x[point_i] = sorted_points[point_i][1] + lanes[lane_i % len(lanes)]
+        cluster = [i]
+
+    for lane_i, point_i in enumerate(cluster):
+        display_x[point_i] = sorted_points[point_i][1] + lanes[lane_i % len(lanes)]
+
+    return display_x
+
+
 def plot_softness_true_spacing_by_solref(
     results, algo="apg", metric="eval/episode_reward"
 ):
-    """One true-spacing reward plot per solref[0] value."""
+    """One reward-vs-penetration plot per solref[0] value."""
     softness = load_softness()
     if not softness:
         return []
@@ -749,12 +902,6 @@ def plot_softness_true_spacing_by_solref(
         if not rank_positions:
             continue
 
-        softest_pen_mm = max(pen_mm for _, pen_mm in rank_positions)
-        x_by_rank = {
-            rank: softest_pen_mm - pen_mm
-            for rank, pen_mm in rank_positions
-        }
-
         points = []
         for r in results:
             key = _match_key(r)
@@ -765,7 +912,7 @@ def plot_softness_true_spacing_by_solref(
             rank, pen_m = softness[key]
             pen_mm = pen_m * 1000
             points.append((
-                rank, x_by_rank[rank], pen_mm, r[metric], r["solimp0"],
+                rank, pen_mm, pen_mm, r[metric], r["solimp0"],
                 r["solimp1"], r["solimp2"],
             ))
 
@@ -773,19 +920,19 @@ def plot_softness_true_spacing_by_solref(
             continue
 
         fig, (ax_rank, ax) = plt.subplots(
-            2, 1, figsize=(10, 6.5), sharex=True, constrained_layout=True,
+            2, 1, figsize=(16, 7.2), sharex=True, constrained_layout=True,
             gridspec_kw={"height_ratios": [0.9, 4.0]},
         )
 
         sorted_rank_positions = sorted(rank_positions)
-        xs_all = [x_by_rank[rank] for rank, _ in sorted_rank_positions]
+        xs_all = [pen_mm for _, pen_mm in sorted_rank_positions]
         xmin, xmax = min(xs_all), max(xs_all)
         span = max(xmax - xmin, 1e-6)
         color = sr_colors[sr0]
 
         ax_rank.hlines(0, xmin, xmax, color="#8a8a8a", linewidth=1.0, zorder=1)
-        for rank, _ in sorted_rank_positions:
-            x = x_by_rank[rank]
+        for rank, pen_mm in sorted_rank_positions:
+            x = pen_mm
             label_y = 0.22 + 0.09 * ((rank - 1) % 3)
             ax_rank.vlines(
                 x, 0, label_y - 0.02, color=color, linewidth=0.8, alpha=0.55
@@ -793,40 +940,57 @@ def plot_softness_true_spacing_by_solref(
             ax_rank.scatter([x], [0], c=color, s=32, edgecolors="black",
                             linewidths=0.25, zorder=3)
             ax_rank.text(x, label_y, str(rank), ha="center", va="bottom",
-                         fontsize=7, rotation=90, color="#333333")
+                         fontsize=6, rotation=90, color="#333333")
         ax_rank.set_ylim(-0.08, 0.56)
         ax_rank.set_yticks([])
         ax_rank.set_ylabel("rank", rotation=0, labelpad=24)
         ax_rank.set_title(
-            f"softness ranks for train solref[0]={sr0:g}, true penetration spacing"
+            f"softness ranks for train solref[0]={sr0:g}, "
+            "ball-drop max penetration (hard -> soft)"
         )
         ax_rank.grid(False)
         for spine in ["left", "right", "top"]:
             ax_rank.spines[spine].set_visible(False)
 
-        sorted_points = sorted(points, key=lambda p: p[0])
-        ax.plot([p[1] for p in sorted_points], [p[3] for p in sorted_points],
-                color="#666666", linewidth=1, alpha=0.45, zorder=2)
-        ax.scatter([p[1] for p in sorted_points], [p[3] for p in sorted_points],
-                   c=color, s=75, alpha=0.85, edgecolors="black",
+        sorted_points = sorted(points, key=lambda p: p[1])
+        display_x = _dodged_x_positions(sorted_points, span)
+        ax.plot(display_x, [p[3] for p in sorted_points],
+                color="#666666", linewidth=0.8, alpha=0.22, zorder=2)
+        ax.scatter(display_x, [p[3] for p in sorted_points],
+                   c=color, s=46, alpha=0.82, edgecolors="black",
                    linewidths=0.3, label=_solref_label(sr0), zorder=3)
 
-        for rank, x, pen_mm, rew, s0, s1, s2 in sorted_points:
-            label = f"#{rank}\n[{s0:.3f},{s1:.3f},{s2:.3f}]\n{pen_mm:.1f}mm"
-            ax.annotate(label, (x, rew), textcoords="offset points",
-                        xytext=(5, 5), fontsize=6.5, color="#444444",
-                        alpha=0.85)
+        label_offsets = [(5, 7), (5, 21), (-5, -19), (-5, -7)]
+        for i, ((rank, _, pen_mm, rew, s0, s1, s2), x) in enumerate(
+            zip(sorted_points, display_x)
+        ):
+            dx, dy = label_offsets[i % len(label_offsets)]
+            label = f"#{rank} [{s0:.3g},{s1:.3g},{s2:.3g}]"
+            ax.annotate(
+                label,
+                (x, rew),
+                textcoords="offset points",
+                xytext=(dx, dy),
+                fontsize=5.4,
+                ha="left" if dx > 0 else "right",
+                va="bottom" if dy > 0 else "top",
+                color="#444444",
+                alpha=0.82,
+            )
 
-        ax.set_xlim(xmin - 0.04 * span, xmax + 0.04 * span)
+        xmin_plot = min(xmin, min(display_x))
+        xmax_plot = max(xmax, max(display_x))
+        plot_span = max(xmax_plot - xmin_plot, 1e-6)
+        ax.set_xlim(xmin_plot - 0.06 * plot_span, xmax_plot + 0.06 * plot_span)
         ax.set_xlabel(
-            f"soft → hard distance within solref[0]={sr0:g} "
-            "(mm penetration drop)"
+            f"ball-drop max penetration depth within solref[0]={sr0:g} "
+            "(mm): hard -> soft; markers lightly dodged"
         )
         ax.set_ylabel(metric)
         ax.legend(title="train solref[0]", fontsize=8)
         ax.grid(alpha=0.2)
         ax.set_title(
-            f"{algo.upper()} Go2 sweep — reward vs true-spaced softness "
+            f"{algo.upper()} Go2 sweep — reward vs calibrated softness "
             f"(solref[0]={sr0:g})"
         )
 
@@ -1039,6 +1203,193 @@ def plot_softness_boxplot(results, algo="apg", metric="eval/episode_reward"):
     return p
 
 
+def _smooth_surface_grid(points, values, grid_x, grid_y, vmin=None, vmax=None):
+    """Interpolate sparse sweep samples onto a smooth regular grid."""
+    from scipy.interpolate import CloughTocher2DInterpolator
+    from scipy.interpolate import NearestNDInterpolator
+
+    interp = CloughTocher2DInterpolator(points, values)
+    grid = interp(grid_x, grid_y)
+
+    if np.isnan(grid).any():
+        nearest = NearestNDInterpolator(points, values)
+        grid = np.where(np.isnan(grid), nearest(grid_x, grid_y), grid)
+
+    if vmin is not None and vmax is not None:
+        grid = np.clip(grid, vmin, vmax)
+    return grid
+
+
+def _hillshade_facecolors(facecolors, height_grid):
+    """Add slope-based shading without changing the hardness colormap order."""
+    from matplotlib.colors import LightSource
+
+    light = LightSource(azdeg=320, altdeg=38)
+    shade = light.hillshade(height_grid, vert_exag=0.75, fraction=1.15)
+    shade = 0.70 + 0.30 * shade
+
+    shaded = facecolors.copy()
+    shaded[..., :3] = np.clip(facecolors[..., :3] * shade[..., None], 0.0, 1.0)
+    return shaded
+
+
+def plot_solimp0_solimp2_reward_surface_by_solref(
+    results, algo="apg", metric="eval/episode_reward", fixed_solimp1=0.95
+):
+    """3D reward surfaces at fixed solimp[1], colored by calibrated hardness."""
+    from matplotlib.colors import LinearSegmentedColormap
+    from matplotlib.colors import PowerNorm
+
+    softness = load_softness()
+    if not softness:
+        return []
+
+    valid = [
+        r
+        for r in results
+        if r[metric] is not None
+        and abs(r["solimp1"] - fixed_solimp1) < 1e-9
+        and _match_key(r) in softness
+    ]
+    if not valid:
+        return []
+
+    reward_min = min(r[metric] for r in valid)
+    reward_max = max(r[metric] for r in valid)
+    cmap = LinearSegmentedColormap.from_list(
+        "hardness_gray", ["#242424", "#f0f0f0"]
+    )
+
+    x_values = sorted({r["solimp0"] for r in valid})
+    y_values = sorted({r["solimp2"] for r in valid})
+    x_log_values = np.log10(np.array(x_values))
+    y_log_values = np.log10(np.array(y_values))
+    x_grid_values = np.linspace(min(x_log_values), max(x_log_values), 110)
+    y_grid_values = np.linspace(min(y_log_values), max(y_log_values), 110)
+    grid_x, grid_y = np.meshgrid(x_grid_values, y_grid_values)
+
+    paths = []
+    for sr0 in SOLREF0_VALUES:
+        group = [
+            r for r in valid if abs(r["solref0"] - sr0) < 1e-9
+        ]
+        if len(group) < 4:
+            continue
+
+        points = np.array([
+            [np.log10(r["solimp0"]), np.log10(r["solimp2"])]
+            for r in group
+        ])
+        rewards = np.array([r[metric] for r in group], dtype=float)
+        log_pen = np.array([
+            np.log10(softness[_match_key(r)][1] * 1000.0) for r in group
+        ])
+        color_log_pen_min = float(np.min(log_pen))
+        color_log_pen_max = float(np.quantile(log_pen, 0.90))
+        if color_log_pen_max <= color_log_pen_min:
+            color_log_pen_max = float(np.max(log_pen))
+        pen_norm = PowerNorm(
+            gamma=0.65, vmin=color_log_pen_min, vmax=color_log_pen_max
+        )
+        mappable = plt.cm.ScalarMappable(norm=pen_norm, cmap=cmap)
+        mappable.set_array([])
+
+        reward_grid = _smooth_surface_grid(
+            points, rewards, grid_x, grid_y, reward_min, reward_max
+        )
+        log_pen_grid = _smooth_surface_grid(
+            points, log_pen, grid_x, grid_y, color_log_pen_min,
+            color_log_pen_max
+        )
+        facecolors = _hillshade_facecolors(cmap(pen_norm(log_pen_grid)), reward_grid)
+
+        fig = plt.figure(figsize=(10.2, 7.2))
+        fig.subplots_adjust(left=0.00, right=0.80, top=0.90, bottom=0.02)
+        ax = fig.add_subplot(1, 1, 1, projection="3d")
+        ax.plot_surface(
+            grid_x,
+            grid_y,
+            reward_grid,
+            facecolors=facecolors,
+            rstride=1,
+            cstride=1,
+            linewidth=0.08,
+            edgecolor=(0.12, 0.12, 0.12, 0.12),
+            antialiased=True,
+            shade=False,
+            alpha=0.97,
+        )
+        ax.contour(
+            grid_x,
+            grid_y,
+            reward_grid,
+            zdir="z",
+            offset=reward_min - 0.03,
+            levels=9,
+            colors="#303030",
+            linewidths=0.45,
+            alpha=0.68,
+        )
+        ax.set_xlabel("solimp[0] (log scale)")
+        ax.set_ylabel("solimp[2] (log scale)")
+        ax.set_zlabel(metric)
+        ax.set_xlim(min(x_log_values), max(x_log_values))
+        ax.set_ylim(min(y_log_values), max(y_log_values))
+        ax.set_zlim(reward_min - 0.03, reward_max + 0.03)
+        ax.set_xticks(np.log10(np.array(x_values)))
+        ax.set_xticklabels([f"{value:g}" for value in x_values])
+        ax.set_yticks(np.log10(np.array(SOLIMP2_PLOT_VALUES)))
+        ax.set_yticklabels([f"{value:g}" for value in SOLIMP2_PLOT_VALUES])
+        ax.tick_params(axis="both", which="major", labelsize=8, pad=1)
+        ax.zaxis.set_tick_params(labelsize=8, pad=2)
+        ax.view_init(elev=27, azim=-52)
+        ax.set_box_aspect((1.2, 1.0, 0.62))
+        ax.xaxis.set_pane_color((0.96, 0.96, 0.96, 1.0))
+        ax.yaxis.set_pane_color((0.96, 0.96, 0.96, 1.0))
+        ax.zaxis.set_pane_color((0.985, 0.985, 0.985, 1.0))
+        for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
+            axis._axinfo["grid"]["color"] = (0.68, 0.68, 0.68, 0.75)
+            axis._axinfo["grid"]["linewidth"] = 0.75
+        ax.set_title(
+            f"{algo.upper()} Go2 reward surface, solimp[1]={fixed_solimp1:g}, "
+            f"solref[0]={sr0:g}"
+        )
+
+        cbar = fig.colorbar(
+            mappable, ax=ax, shrink=0.64, pad=0.12, extend="max"
+        )
+        tick_mm = np.geomspace(
+            10 ** color_log_pen_min, 10 ** color_log_pen_max, num=5
+        )
+        cbar.set_ticks(np.log10(tick_mm))
+        cbar.set_ticklabels([f"{value:.1f}" for value in tick_mm])
+        cbar.set_label(
+            "penetration (mm), clipped; darker = harder"
+        )
+
+        sr_name = _solref_filename_value(sr0)
+        if abs(fixed_solimp1 - 0.95) < 1e-9:
+            filename = (
+                f"{algo}_go2_solimp0_solimp2_reward_surface_"
+                f"solref_{sr_name}.png"
+            )
+        else:
+            solimp1_name = _solref_filename_value(fixed_solimp1)
+            filename = (
+                f"{algo}_go2_solimp0_solimp2_reward_surface_"
+                f"solimp1_{solimp1_name}_solref_{sr_name}.png"
+            )
+        p = os.path.join(
+            FIGURE_DIR,
+            filename,
+        )
+        fig.savefig(p)
+        plt.close(fig)
+        paths.append(p)
+
+    return paths
+
+
 def _parse_args():
     parser = argparse.ArgumentParser(
         description="Plot Go2 solimp/solref sweep results."
@@ -1081,6 +1432,9 @@ def main():
             plot_best_solref(results, algo, metric),
             plot_heatmap(results, algo, metric),
             plot_3d_grid(results, algo, metric),
+            *plot_solimp0_solimp2_reward_surface_by_solref(
+                results, algo, metric
+            ),
             # Softness-based plots
             plot_softness_rank_vs_reward(results, algo, metric),
             plot_softness_true_spacing_vs_reward(results, algo, metric),

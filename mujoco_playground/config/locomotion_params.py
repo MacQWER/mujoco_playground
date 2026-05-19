@@ -356,7 +356,7 @@ def brax_ppo_config(
     # Total steps = 256 * 64 * 256 = 4,194,304
     # Eval every 65,536 steps (4194304 / 64 intervals)
     rl_config.num_timesteps = 4_194_304 * 4
-    rl_config.num_evals = 65  # 64 intervals + 1 initial eval
+    rl_config.num_evals = 33  # 64 intervals + 1 initial eval
     rl_config.num_eval_envs = 64  # Match APG's num_eval_envs
     rl_config.num_resets_per_eval = 0  # Disable extra resets between evals
     rl_config.reward_scaling = 10.0
@@ -370,8 +370,8 @@ def brax_ppo_config(
     rl_config.discounting = 0.97
     rl_config.learning_rate = 1e-4  # Match APG
     rl_config.entropy_cost = 1e-4  # Match APG
-    rl_config.num_envs = 256  # Match APG
-    rl_config.batch_size = 32  # 32 × 8 = 256 = num_envs, for correct Brax step calculation
+    rl_config.num_envs = 8192  # Match APG
+    rl_config.batch_size = 1024  # 32 × 8 = 256 = num_envs, for correct Brax step calculation
 
     # rl_config.num_timesteps = 20_000_000
     # rl_config.num_evals = 20
