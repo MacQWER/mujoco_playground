@@ -27,22 +27,28 @@ class Go2Env(mjx_env.MjxEnv):
         self._xml_path = xml_path
         self._mj_model = mujoco.MjModel.from_xml_path(self._xml_path)
         self._mj_model.opt.timestep = config.sim_dt
-        self._mj_model.opt.impratio = config.env.impratio
-        self._mj_model.opt.iterations = config.env.iterations
+        if "impratio" in config.env:
+            self._mj_model.opt.impratio = config.env.impratio
+        if "iterations" in config.env:
+            self._mj_model.opt.iterations = config.env.iterations
         # Modify PD gains.
         self._mj_model.dof_damping[6:] = config.Kd
         self._mj_model.actuator_gainprm[:, 0] = config.Kp
         self._mj_model.actuator_biasprm[:, 1] = -config.Kp
 
-        # Apply foot solimp/solref from config.
-        solimp = config.env.solimp
-        solref = config.env.solref
-        full_solimp = np.array([solimp[0], solimp[1], solimp[2], 0.5, 2.0])
-        full_solref = np.array([solref[0], solref[1]])
+        # Apply optional foot solimp/solref overrides from config.
+        solimp = config.env.get("solimp")
+        solref = config.env.get("solref")
         for foot_name in consts.FEET_GEOMS:
             geom_id = self._mj_model.geom(foot_name).id
-            self._mj_model.geom_solimp[geom_id] = full_solimp
-            self._mj_model.geom_solref[geom_id] = full_solref
+            if solimp is not None:
+                self._mj_model.geom_solimp[geom_id] = np.array(
+                    [solimp[0], solimp[1], solimp[2], 0.5, 2.0]
+                )
+            if solref is not None:
+                self._mj_model.geom_solref[geom_id] = np.array(
+                    [solref[0], solref[1]]
+                )
 
         # Increase offscreen framebuffer size to render at higher resolutions.
         self._mj_model.vis.global_.offwidth = 3840

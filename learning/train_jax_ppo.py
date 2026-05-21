@@ -502,13 +502,22 @@ def main(argv):
   jit_inference_fn = jax.jit(inference_fn)
 
   # Run evaluation rollouts.
+  if _ENV_NAME.value in ("Go2Joystick", "Go2SmoothJoystickPPO"):
+    command_obs_slice = slice(45, 48)
+  else:
+    command_obs_slice = slice(6, 9)
+
   def set_cmd(state, cmd):
     new_info = state.info.copy()
     new_info["command"] = cmd
     new_obs = state.obs
     if isinstance(new_obs, dict) and "state" in new_obs:
       new_obs = new_obs.copy()
-      new_obs["state"] = new_obs["state"].at[6:9].set(cmd)
+      new_obs["state"] = new_obs["state"].at[command_obs_slice].set(cmd)
+      if "privileged_state" in new_obs:
+        new_obs["privileged_state"] = new_obs["privileged_state"].at[
+            command_obs_slice
+        ].set(cmd)
     return state.replace(info=new_info, obs=new_obs)
 
   def rollout_fn(rng, state, target_cmd):
@@ -550,6 +559,11 @@ def main(argv):
   reset_states = jax.jit(jax.vmap(eval_env.reset))(rng)
   if _VISION.value:
     reset_states = jax.tree_util.tree_map(lambda x: x[0], reset_states)
+
+  print(
+      "Rollout command obs slice: "
+      f"{command_obs_slice.start}:{command_obs_slice.stop}"
+  )
 
   target_command = jp.array([0.5, 0.0, 0.0])
   batch_commands = jp.tile(target_command, (_NUM_VIDEOS.value, 1))

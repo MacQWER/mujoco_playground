@@ -54,7 +54,10 @@ def default_config() -> config_dict.ConfigDict:
           ),
       ),
       env=config_dict.create(
-          impratio=100
+          impratio=100,
+          iterations=10,
+          solimp=[0.9, 0.95, 0.001],
+          solref=[0.02, 1.0],
       ),
       reward_config=config_dict.create(
           scales=config_dict.create(
