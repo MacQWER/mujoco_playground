@@ -11,15 +11,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Sweep runner for Go2 solimp+solref parameter sweep.
+"""Sweep runner for Go2Joystick solimp+solref parameter sweep.
 
 Each invocation handles a BATCH of configs on a SINGLE GPU,
 running them sequentially. JAX persistent cache ensures compilation
 happens once per architecture.
 
 Usage:
-    CUDA_VISIBLE_DEVICES=0 WANDB_PROJECT=go2-sweep-ppo \
-        python learning/go2_sweep_runner.py --configs '[[0.015,0.5,0.001,0.02],...]'
+    CUDA_VISIBLE_DEVICES=0 WANDB_PROJECT=go2-joystick-sweep-ppo \
+        python learning/go2_sweep_runner.py --configs '[[0.015,0.95,0.001,0.02],...]'
 """
 
 import copy
@@ -39,8 +39,8 @@ os.environ["XLA_FLAGS"] = xla_flags
 
 import jax
 from jax import config as jax_config
-jax.config.update("jax_enable_x64", True)
-jax.config.update("jax_default_matmul_precision", "high")
+jax.config.update("jax_enable_x64", False)
+# jax.config.update("jax_default_matmul_precision", "high")
 
 _cache_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "jit_cache")
 os.makedirs(_cache_path, exist_ok=True)
@@ -68,12 +68,11 @@ import wandb
 warnings.filterwarnings("ignore")
 logging.set_verbosity(logging.WARNING)
 
-ENV_NAME = "Go2Joystick2"
+ENV_NAME = "Go2Joystick"
 EVAL_SOLIMP = [0.9, 0.95, 0.001]
 EVAL_SOLREF = [0.004, 1.0]
 TRAIN_ITERATIONS = 10
-EVAL_ITERATIONS = 100
-FIXED_CMD = jp.array([0.5, 0.0, 0.0])
+EVAL_ITERATIONS = 10
 
 
 def build_params(s0, s1, s2, sr0):
@@ -83,36 +82,6 @@ def build_params(s0, s1, s2, sr0):
   solref = [float(sr0), 1.0]
   return solimp, solref
 
-
-class FixedCommandEnv:
-  """Wraps an eval env to force a fixed command on every step."""
-
-  def __init__(self, env, command):
-    self._env = env
-    self._cmd = command
-    for attr in ("dt", "observation_size", "action_size", "_config", "mj_model"):
-      if hasattr(env, attr):
-        object.__setattr__(self, attr, getattr(env, attr))
-
-  def reset(self, rng):
-    state = self._env.reset(rng)
-    return self._fix(state)
-
-  def step(self, state, action):
-    state = self._env.step(self._fix(state), action)
-    return self._fix(state)
-
-  def render(self, *args, **kwargs):
-    return self._env.render(*args, **kwargs)
-
-  def _fix(self, state):
-    info = dict(state.info)
-    info["command"] = self._cmd
-    obs = state.obs
-    if isinstance(obs, dict) and "state" in obs:
-      obs = dict(obs)
-      obs["state"] = obs["state"].at[6:9].set(self._cmd)
-    return state.replace(info=info, obs=obs)
 
 
 def _import_ppo():
@@ -141,25 +110,13 @@ def _render_video(eval_env, make_inference_fn, params, suffix, algorithm):
   jit_reset = jax.jit(eval_env.reset)
   jit_step = jax.jit(eval_env.step)
 
-  def set_cmd(state, cmd):
-    new_info = state.info.copy()
-    new_info["command"] = cmd
-    new_obs = state.obs
-    if isinstance(new_obs, dict) and "state" in new_obs:
-      new_obs = new_obs.copy()
-      new_obs["state"] = new_obs["state"].at[6:9].set(cmd)
-    return state.replace(info=new_info, obs=new_obs)
-
   rng = jax.random.PRNGKey(0)
   state = jit_reset(rng)
-  target_command = jp.array([0.5, 0.0, 0.0])
-  state = set_cmd(state, target_command)
   rollout = []
   for _ in range(eval_env._config.episode_length):  # pylint: disable=protected-access
     act_rng, rng = jax.random.split(rng)
     act = jit_inference_fn(state.obs, act_rng)[0]
     state = jit_step(state, act)
-    state = set_cmd(state, target_command)
     rollout.append(state)
 
   render_every = 2
@@ -314,8 +271,10 @@ def run_apg(s0, s1, s2, sr0, suffix):
 def main(argv):
   del argv
   configs = json.loads(_CONFIGS.value)
-  project = os.environ.get("WANDB_PROJECT", "go2-sweep")
+  project = os.environ.get("WANDB_PROJECT", "go2-joystick-sweep")
   algorithm = _ALGORITHM.value
+  if algorithm != "ppo":
+    raise ValueError("Go2Joystick sweep runner is PPO-only; use --algorithm=ppo.")
 
   # Random delay (0-5s) to stagger JIT compilation across processes.
   # Earlier processes compile and write to jit_cache; later ones read it.
@@ -348,7 +307,7 @@ def main(argv):
     print(f"  done ({time.time() - t0:.1f}s)")
 
 
-_ALGORITHM = flags.DEFINE_string("algorithm", "ppo", "ppo or apg")
+_ALGORITHM = flags.DEFINE_string("algorithm", "ppo", "PPO only")
 _CONFIGS = flags.DEFINE_string("configs", "[]", "JSON list of [solimp0,solimp1,solimp2,solref0]")
 
 if __name__ == "__main__":

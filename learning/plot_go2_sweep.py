@@ -1,4 +1,4 @@
-"""Plot Go2 solimp+solref sweep results.
+"""Plot Go2Joystick PPO solimp+solref sweep results.
 
 Reads eval/episode_reward from wandb summary JSONs.
 Only uses the latest sweep timestamp.
@@ -23,13 +23,13 @@ FIGURE_DIR = os.path.join(LOG_DIR, "figures")
 
 BASE_SOLIMP0_VALUES = [0.015, 0.9]
 SOLIMP0_VALUES = [0.015, 0.03, 0.1, 0.35, 0.7, 0.9]
-SOLIMP1_VALUES = [0.5, 0.95]
+SOLIMP1_VALUES = [0.95]
 BASE_SOLIMP2_VALUES = [0.03, 0.001, 0.5]
 SOLIMP2_VALUES = [0.5, 0.1, 0.05, 0.03, 0.01, 0.006, 0.001]
 SOLREF0_VALUES = [0.1, 0.02, 0.004]
 
 LIGHT27_SOLIMP2_VALUES = [0.006, 0.01, 0.05, 0.1]
-LIGHT27_FULL_PAIRS = [(0.015, 0.5), (0.015, 0.95)]
+LIGHT27_FULL_PAIRS = [(0.015, 0.95)]
 LIGHT27_DIAGNOSTIC_PAIR = (0.9, 0.95)
 LIGHT27_DIAGNOSTIC_SOLIMP2_VALUES = [0.1]
 
@@ -101,10 +101,9 @@ SOFTNESS_CSV = next(
     (path for path in SOFTNESS_CSV_CANDIDATES if os.path.exists(path)),
     SOFTNESS_CSV_CANDIDATES[-1],
 )
-_LEGACY_SUMMARY_CACHE = {}
 
 
-def load_results(algo="apg"):
+def load_results(algo="ppo"):
     pattern = os.path.join(LOG_DIR, f"{algo}_*_gpu*_slot*.log")
     latest_logs = {}
     for log_path in sorted(glob.glob(pattern)):
@@ -129,9 +128,7 @@ def load_results(algo="apg"):
         ts, log_path, text = latest_logs[slot]
         summary = _load_wandb_summary(text)
         if not summary:
-            summary = _load_legacy_summary(algo, slot)
-            if not summary:
-                continue
+            continue
 
         s0, s1, s2, sr0 = GRID[slot]
         record = {
@@ -251,32 +248,7 @@ def _parse_max_penetration(text):
     return float(match.group(1))
 
 
-def _load_legacy_summary(algo, slot):
-    """Load metrics for old synced runs whose local W&B summaries are absent."""
-    if algo not in _LEGACY_SUMMARY_CACHE:
-        path = os.path.join(LOG_DIR, f"{algo}_legacy_base27_results.csv")
-        rows_by_slot = {}
-        if os.path.exists(path):
-            with open(path, newline="", encoding="utf-8") as f:
-                for row in csv.DictReader(f):
-                    parsed = {}
-                    for key, value in row.items():
-                        if key in ("path", ""):
-                            parsed[key] = value
-                        elif value == "":
-                            parsed[key] = None
-                        else:
-                            parsed[key] = float(value)
-                    rows_by_slot[int(parsed["slot"])] = parsed
-        _LEGACY_SUMMARY_CACHE[algo] = rows_by_slot
-
-    row = _LEGACY_SUMMARY_CACHE[algo].get(slot)
-    if row is None:
-        return {}
-    return row
-
-
-def save_csv(results, algo="apg"):
+def save_csv(results, algo="ppo"):
     os.makedirs(FIGURE_DIR, exist_ok=True)
     path = os.path.join(FIGURE_DIR, f"{algo}_go2_sweep_results.csv")
     fieldnames = [
@@ -1237,7 +1209,6 @@ def plot_solimp0_solimp2_reward_surface_by_solref(
     results, algo="apg", metric="eval/episode_reward", fixed_solimp1=0.95
 ):
     """3D reward surfaces at fixed solimp[1], colored by calibrated hardness."""
-    from matplotlib.colors import LinearSegmentedColormap
     from matplotlib.colors import PowerNorm
 
     softness = load_softness()
@@ -1256,9 +1227,7 @@ def plot_solimp0_solimp2_reward_surface_by_solref(
 
     reward_min = min(r[metric] for r in valid)
     reward_max = max(r[metric] for r in valid)
-    cmap = LinearSegmentedColormap.from_list(
-        "hardness_gray", ["#242424", "#f0f0f0"]
-    )
+    cmap = plt.get_cmap("viridis")
 
     x_values = sorted({r["solimp0"] for r in valid})
     y_values = sorted({r["solimp2"] for r in valid})
@@ -1364,7 +1333,7 @@ def plot_solimp0_solimp2_reward_surface_by_solref(
         cbar.set_ticks(np.log10(tick_mm))
         cbar.set_ticklabels([f"{value:.1f}" for value in tick_mm])
         cbar.set_label(
-            "penetration (mm), clipped; darker = harder"
+            "penetration (mm), clipped; purple = harder"
         )
 
         sr_name = _solref_filename_value(sr0)
@@ -1397,8 +1366,8 @@ def _parse_args():
     parser.add_argument(
         "--algo",
         choices=("apg", "ppo", "both"),
-        default="apg",
-        help="Which algorithm results to plot. Default: apg.",
+        default="ppo",
+        help="Which algorithm results to plot. Default: ppo.",
     )
     return parser.parse_args()
 

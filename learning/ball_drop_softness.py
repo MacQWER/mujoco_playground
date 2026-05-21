@@ -1,4 +1,4 @@
-"""Ball-drop softness calibration for Go2 solimp/solref sweep parameters.
+"""Ball-drop softness calibration for Go2Joystick solimp/solref sweep parameters.
 
 Drops a ball (r=0.01m, m=1kg) from 1m onto a ground plane.
 The solimp/solref under test are applied to the ball geom.
@@ -13,12 +13,12 @@ import mujoco
 import numpy as np
 
 BASE_SOLIMP0_VALUES = [0.015, 0.9]
-SOLIMP1_VALUES = [0.5, 0.95]
+SOLIMP1_VALUES = [0.95]
 BASE_SOLIMP2_VALUES = [0.03, 0.001, 0.5]
 SOLREF0_VALUES = [0.1, 0.02, 0.004]
 
 LIGHT27_SOLIMP2_VALUES = [0.006, 0.01, 0.05, 0.1]
-LIGHT27_FULL_PAIRS = [(0.015, 0.5), (0.015, 0.95)]
+LIGHT27_FULL_PAIRS = [(0.015, 0.95)]
 LIGHT27_DIAGNOSTIC_PAIR = (0.9, 0.95)
 LIGHT27_DIAGNOSTIC_SOLIMP2_VALUES = [0.1]
 

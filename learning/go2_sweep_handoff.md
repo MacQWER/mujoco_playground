@@ -399,3 +399,55 @@ There were also pre-existing untracked plotting files:
 ?? learning/plot_apg_sweep.py
 ?? learning/plot_sweep_shared_colors.py
 ```
+
+
+## 2026-05-21 Go2Joystick PPO Rerun Notes
+
+The old PPO sweep data was discarded because it used the buggy
+`Go2Joystick2` setup. The rerun uses `Go2Joystick`, PPO only, with
+`solimp1=0.95` fixed and the normal environment random command sampling.
+The sweep has 57 slots:
+
+- base grid: 18 slots
+- light supplement: 15 slots
+- mid supplement: 24 slots
+
+Runner settings for this rerun:
+
+- `TRAIN_ITERATIONS = 10`
+- `EVAL_ITERATIONS = 10`
+- `jax_enable_x64 = False`
+- no fixed command wrapper
+- no `jax_default_matmul_precision` override
+
+Latest completed run:
+
+```text
+launch log: logs/go2_sweep/launch_ppo_20260521_112618.out
+result csv: logs/go2_sweep/figures/ppo_go2_sweep_results.csv
+status: PPO OK=57, FAIL=0
+rows: 57
+solimp1 values: [0.95]
+solref0 groups: 19 points each for 0.1, 0.02, and 0.004
+reward range: 13.55 to 27.71, mean 24.54
+```
+
+Generated surface figures:
+
+```text
+logs/go2_sweep/figures/ppo_go2_solimp0_solimp2_reward_surface_solref_0p1.png
+logs/go2_sweep/figures/ppo_go2_solimp0_solimp2_reward_surface_solref_0p02.png
+logs/go2_sweep/figures/ppo_go2_solimp0_solimp2_reward_surface_solref_0p004.png
+```
+
+Surface interpretation:
+
+- `solref0=0.1` is the softest train-contact group and is visibly unstable:
+  reward ranges from 13.55 to 26.24 across its 19 points.
+- `solref0=0.02` and `solref0=0.004` both form high-reward plateau regions:
+  rewards stay in the narrower ranges 26.26 to 27.45 and 26.31 to 27.71.
+- In the two harder groups, darker/harder regions generally trend toward
+  higher reward, but the relation is not strictly monotonic point-by-point.
+- Practical takeaway: avoid the very soft `solref0=0.1` regime; harder contact
+  settings are more stable and usually better, with diminishing differences
+  once the setting is already in the `0.02` or `0.004` range.

@@ -11,11 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Launch Go2 solimp+solref sweep across GPUs.
+"""Launch Go2Joystick PPO solimp+solref sweep across GPUs.
 
-Grid: original filtered 2x2x3x3 train solimp triples + solref[0]
-with solimp[0] <= solimp[1], followed by targeted light27 and mid42
-supplements.
+Grid: 57 train configs with solimp[1] fixed at 0.95, preserving the
+old base/light/mid slot families needed for the 3D solimp0-solimp2 surfaces.
 Eval solimp/solref is fixed in go2_sweep_runner.py.
 
 Usage:
@@ -38,8 +37,7 @@ import time
 from absl import app
 from absl import flags
 
-PPO_PROJECT = "go2-sweep-ppo"
-APG_PROJECT = "go2-sweep-apg"
+PPO_PROJECT = "go2-joystick-sweep-ppo"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 RUNNER = os.path.join(SCRIPT_DIR, "go2_sweep_runner.py")
@@ -50,15 +48,13 @@ LOG_DIR = os.path.join(SCRIPT_DIR, "..", "logs", "go2_sweep")
 # JIT_READY.  This keeps JIT compilation serialized while allowing multiple
 # training processes to share the same GPU.
 PPO_MEM_LIMIT = 1
-APG_MEM_LIMIT = 1
-
 SOLIMP0_VALUES = [0.015, 0.9]
-SOLIMP1_VALUES = [0.5, 0.95]
+SOLIMP1_VALUES = [0.95]
 SOLIMP2_VALUES = [0.03, 0.001, 0.5]
 SOLREF0_VALUES = [0.1, 0.02, 0.004]
 
 LIGHT27_SOLIMP2_VALUES = [0.006, 0.01, 0.05, 0.1]
-LIGHT27_FULL_PAIRS = [(0.015, 0.5), (0.015, 0.95)]
+LIGHT27_FULL_PAIRS = [(0.015, 0.95)]
 LIGHT27_DIAGNOSTIC_PAIR = (0.9, 0.95)
 LIGHT27_DIAGNOSTIC_SOLIMP2_VALUES = [0.1]
 
@@ -73,7 +69,7 @@ else:
 
 
 def build_base_grid():
-  """Returns the original filtered 27-slot grid."""
+  """Returns the solimp[1]=0.95 base grid."""
   return [
       combo
       for combo in itertools.product(
@@ -87,7 +83,7 @@ def build_base_grid():
 
 
 def build_light27_grid():
-  """Returns the completed light27 solimp[2] supplement grid."""
+  """Returns the solimp[1]=0.95 light15 solimp[2] supplement grid."""
   light27_grid = []
   for sr0 in SOLREF0_VALUES:
     for s0, s1 in LIGHT27_FULL_PAIRS:
@@ -115,7 +111,7 @@ def build_mid42_grid():
 
 
 def build_grid():
-  """Returns stable base/light27 slots followed by the new mid42 slots."""
+  """Returns the 57-slot solimp[1]=0.95 PPO sweep grid."""
   return build_base_grid() + build_light27_grid() + build_mid42_grid()
 
 
@@ -165,49 +161,40 @@ def launch(dry_run=False):
   print("=" * 60)
   print("Go2 Solimp Sweep Launcher")
   print("=" * 60)
+  if _ALGORITHM.value not in (None, "ppo"):
+    raise ValueError("Go2Joystick sweep is PPO-only; use --algo=ppo.")
+
   print(f"PPO Project: {PPO_PROJECT}")
-  print(f"APG Project: {APG_PROJECT}")
-  print(f"Base grid: original {base_count} configs in slots 0-{base_count - 1}.")
+  print(f"Base grid: {base_count} configs in slots 0-{base_count - 1}.")
   print(
-      f"Light27 supplement: slots {light27_start}-{light27_end}; "
-      "pairs (0.015,0.5) and "
-      "(0.015,0.95) use solimp2=[0.006,0.01,0.05,0.1], "
+      f"Light15 supplement: slots {light27_start}-{light27_end}; "
+      "pair (0.015,0.95) uses solimp2=[0.006,0.01,0.05,0.1], "
       "pair (0.9,0.95) keeps diagnostic solimp2=[0.1]."
   )
   print(
       f"Mid42 supplement: slots {mid42_start}-{mid42_end}; "
       "solimp0=[0.03,0.1,0.35,0.7], "
-      "solimp1=[0.5,0.95], solimp2=[0.03,0.1]."
+      "solimp1=0.95, solimp2=[0.03,0.1]."
   )
   print("solref0=[0.1, 0.02, 0.004]")
   print("Filter: solimp[0] <= solimp[1]")
-  algo_name = _ALGORITHM.value or "both"
+  algo_name = _ALGORITHM.value or "ppo"
   print(f"Algorithm: {algo_name.upper()}")
   print(f"GPUs: {GPUS}")
   print()
 
-  print("W&B projects (runs auto-created on first wandb.init):")
-  if _ALGORITHM.value is None or _ALGORITHM.value == "ppo":
-    print(f"  PPO: {PPO_PROJECT}")
-  if _ALGORITHM.value is None or _ALGORITHM.value == "apg":
-    print(f"  APG: {APG_PROJECT}")
+  print("W&B project (runs auto-created on first wandb.init):")
+  print(f"  PPO: {PPO_PROJECT}")
 
   grid = build_grid()
   grid = grid[:_MAX_CONFIGS.value]
-  print(f"Grid: {len(grid)} combos per algorithm")
+  print(f"Grid: {len(grid)} PPO configs")
   print()
 
   log_dir = LOG_DIR
   all_slots = list(enumerate(grid))
 
-  algos_to_run = [
-      (algo, project, mem_limit)
-      for algo, project, mem_limit in [
-          ("ppo", PPO_PROJECT, PPO_MEM_LIMIT),
-          ("apg", APG_PROJECT, APG_MEM_LIMIT),
-      ]
-      if _ALGORITHM.value is None or algo == _ALGORITHM.value
-  ]
+  algos_to_run = [("ppo", PPO_PROJECT, PPO_MEM_LIMIT)]
 
   if dry_run:
     print("DRY RUN: not launching.")
@@ -362,11 +349,11 @@ def launch(dry_run=False):
   print(f"\nAll complete!")
 
 
-_ALGORITHM = flags.DEFINE_string("algo", None, "Run only this algorithm (ppo or apg). If None, run both.")
+_ALGORITHM = flags.DEFINE_string("algo", "ppo", "Run PPO sweep. APG is not supported for Go2Joystick sweep.")
 _DRY_RUN = flags.DEFINE_boolean("dry_run", False, "Show schedule without launching")
 _MAX_CONFIGS = flags.DEFINE_integer(
-    "max_configs", 128,
-    "Limit total configs per algorithm (for testing)",
+    "max_configs", 57,
+    "Limit total PPO configs (for testing)",
 )
 _SKIP_COMPLETED = flags.DEFINE_boolean(
     "skip_completed", False,
