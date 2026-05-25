@@ -33,18 +33,22 @@ LIGHT27_FULL_PAIRS = [(0.015, 0.95)]
 LIGHT27_DIAGNOSTIC_PAIR = (0.9, 0.95)
 LIGHT27_DIAGNOSTIC_SOLIMP2_VALUES = [0.1]
 
+LEGACY_SOLIMP1_VALUES = [0.5, 0.95]
+LEGACY_LIGHT27_FULL_PAIRS = [(0.015, 0.5), (0.015, 0.95)]
+LEGACY_MID42_SOLIMP1_VALUES = [0.5, 0.95]
+
 MID42_SOLIMP0_VALUES = [0.03, 0.1, 0.35, 0.7]
 MID42_SOLIMP2_VALUES = [0.03, 0.1]
 
 SOLIMP2_PLOT_VALUES = SOLIMP2_VALUES  # soft to hard
 
 
-def build_base_grid():
+def build_base_grid(solimp1_values=SOLIMP1_VALUES):
     return [
         combo
         for combo in itertools.product(
             BASE_SOLIMP0_VALUES,
-            SOLIMP1_VALUES,
+            solimp1_values,
             BASE_SOLIMP2_VALUES,
             SOLREF0_VALUES,
         )
@@ -52,10 +56,10 @@ def build_base_grid():
     ]
 
 
-def build_light27_grid():
+def build_light27_grid(full_pairs=LIGHT27_FULL_PAIRS):
     grid = []
     for sr0 in SOLREF0_VALUES:
-        for s0, s1 in LIGHT27_FULL_PAIRS:
+        for s0, s1 in full_pairs:
             for s2 in LIGHT27_SOLIMP2_VALUES:
                 grid.append((s0, s1, s2, sr0))
         s0, s1 = LIGHT27_DIAGNOSTIC_PAIR
@@ -64,12 +68,12 @@ def build_light27_grid():
     return grid
 
 
-def build_mid42_grid():
+def build_mid42_grid(solimp1_values=SOLIMP1_VALUES):
     return [
         combo
         for combo in itertools.product(
             MID42_SOLIMP0_VALUES,
-            SOLIMP1_VALUES,
+            solimp1_values,
             MID42_SOLIMP2_VALUES,
             SOLREF0_VALUES,
         )
@@ -77,7 +81,13 @@ def build_mid42_grid():
     ]
 
 
-GRID = build_base_grid() + build_light27_grid() + build_mid42_grid()
+PPO_GRID = build_base_grid() + build_light27_grid() + build_mid42_grid()
+APG_GRID = (
+    build_base_grid(LEGACY_SOLIMP1_VALUES)
+    + build_light27_grid(LEGACY_LIGHT27_FULL_PAIRS)
+    + build_mid42_grid(LEGACY_MID42_SOLIMP1_VALUES)
+)
+GRID = PPO_GRID
 
 SOLIMP2_TICK_LABELS = [
     "0.5\nsoft",
@@ -103,13 +113,39 @@ SOFTNESS_CSV = next(
 )
 
 
+def _load_apg_legacy_base_results():
+    """Load APG base-grid rows whose original W&B dirs may be off-machine."""
+    path = os.path.join(LOG_DIR, "apg_legacy_base27_results.csv")
+    if not os.path.exists(path):
+        return {}
+
+    float_fields = [
+        "solimp0", "solimp1", "solimp2", "solref0",
+        "eval/episode_reward", "eval/iqm_episode_reward",
+        "eval/trimmed_episode_reward", "eval/avg_episode_length",
+        "eval/episode_ang_vel_xy", "eval/episode_action_rate",
+        "max_penetration_depth",
+    ]
+    by_slot = {}
+    with open(path, newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            slot = int(row["slot"])
+            record = {"slot": slot, "path": row.get("path", "")}
+            for field in float_fields:
+                value = row.get(field)
+                record[field] = float(value) if value not in (None, "") else None
+            by_slot[slot] = record
+    return by_slot
+
+
 def load_results(algo="ppo"):
+    grid = APG_GRID if algo == "apg" else PPO_GRID
     pattern = os.path.join(LOG_DIR, f"{algo}_*_gpu*_slot*.log")
     latest_logs = {}
     for log_path in sorted(glob.glob(pattern)):
         slot_m = re.search(r"_slot(\d+)", os.path.basename(log_path))
         slot = int(slot_m.group(1))
-        if slot >= len(GRID):
+        if slot >= len(grid):
             continue
         ts_m = re.search(rf"{algo}_(\d{{8}}_\d{{6}})_", os.path.basename(log_path))
         ts = ts_m.group(1) if ts_m else ""
@@ -130,7 +166,7 @@ def load_results(algo="ppo"):
         if not summary:
             continue
 
-        s0, s1, s2, sr0 = GRID[slot]
+        s0, s1, s2, sr0 = grid[slot]
         record = {
             "solimp0": s0, "solimp1": s1, "solimp2": s2, "solref0": sr0,
             "slot": slot, "path": os.path.basename(log_path),
@@ -147,6 +183,10 @@ def load_results(algo="ppo"):
         record["_ts"] = ts
         record["_path"] = log_path
         by_slot[slot] = record
+
+    if algo == "apg":
+        for slot, record in _load_apg_legacy_base_results().items():
+            by_slot.setdefault(slot, record)
 
     return [by_slot[s] for s in sorted(by_slot)]
 
@@ -1227,7 +1267,7 @@ def plot_solimp0_solimp2_reward_surface_by_solref(
 
     reward_min = min(r[metric] for r in valid)
     reward_max = max(r[metric] for r in valid)
-    cmap = plt.get_cmap("viridis")
+    cmap = plt.get_cmap("coolwarm_r")
 
     x_values = sorted({r["solimp0"] for r in valid})
     y_values = sorted({r["solimp2"] for r in valid})
@@ -1236,6 +1276,8 @@ def plot_solimp0_solimp2_reward_surface_by_solref(
     x_grid_values = np.linspace(min(x_log_values), max(x_log_values), 110)
     y_grid_values = np.linspace(min(y_log_values), max(y_log_values), 110)
     grid_x, grid_y = np.meshgrid(x_grid_values, y_grid_values)
+
+    display_algo = "FoPG" if algo == "apg" else algo.upper()
 
     paths = []
     for sr0 in SOLREF0_VALUES:
@@ -1272,8 +1314,8 @@ def plot_solimp0_solimp2_reward_surface_by_solref(
         )
         facecolors = _hillshade_facecolors(cmap(pen_norm(log_pen_grid)), reward_grid)
 
-        fig = plt.figure(figsize=(10.2, 7.2))
-        fig.subplots_adjust(left=0.00, right=0.80, top=0.90, bottom=0.02)
+        fig = plt.figure(figsize=(11.2, 8.0))
+        fig.subplots_adjust(left=0.00, right=0.78, top=0.88, bottom=0.04)
         ax = fig.add_subplot(1, 1, 1, projection="3d")
         ax.plot_surface(
             grid_x,
@@ -1299,18 +1341,21 @@ def plot_solimp0_solimp2_reward_surface_by_solref(
             linewidths=0.45,
             alpha=0.68,
         )
-        ax.set_xlabel("solimp[0] (log scale)")
-        ax.set_ylabel("solimp[2] (log scale)")
-        ax.set_zlabel(metric)
+        ax.set_xlabel("solimp[0] (log scale)", labelpad=8)
+        ax.set_ylabel("solimp[2] (log scale)", labelpad=12)
+        ax.set_zlabel(metric, labelpad=8)
         ax.set_xlim(min(x_log_values), max(x_log_values))
         ax.set_ylim(min(y_log_values), max(y_log_values))
         ax.set_zlim(reward_min - 0.03, reward_max + 0.03)
         ax.set_xticks(np.log10(np.array(x_values)))
         ax.set_xticklabels([f"{value:g}" for value in x_values])
         ax.set_yticks(np.log10(np.array(SOLIMP2_PLOT_VALUES)))
-        ax.set_yticklabels([f"{value:g}" for value in SOLIMP2_PLOT_VALUES])
-        ax.tick_params(axis="both", which="major", labelsize=8, pad=1)
-        ax.zaxis.set_tick_params(labelsize=8, pad=2)
+        y_ticklabels = [f"{value:g}" for value in SOLIMP2_PLOT_VALUES]
+        y_ticklabels[-1] = "0.001\n\n"
+        ax.set_yticklabels(y_ticklabels)
+        ax.xaxis.set_tick_params(labelsize=11, pad=1)
+        ax.yaxis.set_tick_params(labelsize=11, pad=8)
+        ax.zaxis.set_tick_params(labelsize=11, pad=5)
         ax.view_init(elev=27, azim=-52)
         ax.set_box_aspect((1.2, 1.0, 0.62))
         ax.xaxis.set_pane_color((0.96, 0.96, 0.96, 1.0))
@@ -1320,8 +1365,10 @@ def plot_solimp0_solimp2_reward_surface_by_solref(
             axis._axinfo["grid"]["color"] = (0.68, 0.68, 0.68, 0.75)
             axis._axinfo["grid"]["linewidth"] = 0.75
         ax.set_title(
-            f"{algo.upper()} Go2 reward surface, solimp[1]={fixed_solimp1:g}, "
-            f"solref[0]={sr0:g}"
+            f"{display_algo} Go2 reward surface, solimp[1]={fixed_solimp1:g}, "
+            f"solref[0]={sr0:g}",
+            fontsize=15,
+            pad=16,
         )
 
         cbar = fig.colorbar(
@@ -1332,8 +1379,10 @@ def plot_solimp0_solimp2_reward_surface_by_solref(
         )
         cbar.set_ticks(np.log10(tick_mm))
         cbar.set_ticklabels([f"{value:.1f}" for value in tick_mm])
+        cbar.ax.tick_params(labelsize=11)
         cbar.set_label(
-            "penetration (mm), clipped; purple = harder"
+            "penetration (mm), clipped; red = harder",
+            fontsize=13,
         )
 
         sr_name = _solref_filename_value(sr0)
@@ -1352,6 +1401,162 @@ def plot_solimp0_solimp2_reward_surface_by_solref(
             FIGURE_DIR,
             filename,
         )
+        fig.savefig(p)
+        plt.close(fig)
+        paths.append(p)
+
+    return paths
+
+
+def plot_solimp0_solimp2_collapsed_trends_by_solref(
+    results, algo="apg", metric="eval/episode_reward", fixed_solimp1=0.95
+):
+    """2D collapsed reward trends matching the 3D solimp[0]/solimp[2] surfaces."""
+    softness = load_softness()
+    valid = [
+        r
+        for r in results
+        if r[metric] is not None
+        and abs(r["solimp1"] - fixed_solimp1) < 1e-9
+        and (not softness or _match_key(r) in softness)
+    ]
+    if not valid:
+        return []
+
+    reward_min = min(r[metric] for r in valid)
+    reward_max = max(r[metric] for r in valid)
+
+    x_values = sorted({r["solimp0"] for r in valid})
+    y_values = sorted({r["solimp2"] for r in valid})
+    x_log_values = np.log10(np.array(x_values))
+    y_log_values = np.log10(np.array(y_values))
+    x_grid_values = np.linspace(min(x_log_values), max(x_log_values), 110)
+    y_grid_values = np.linspace(min(y_log_values), max(y_log_values), 110)
+    grid_x, grid_y = np.meshgrid(x_grid_values, y_grid_values)
+    x_plot_values = 10 ** x_grid_values
+    y_plot_values = 10 ** y_grid_values
+
+    display_algo = "FoPG" if algo == "apg" else algo.upper()
+
+    paths = []
+    for sr0 in SOLREF0_VALUES:
+        group = [
+            r for r in valid if abs(r["solref0"] - sr0) < 1e-9
+        ]
+        if len(group) < 4:
+            continue
+
+        points = np.array([
+            [np.log10(r["solimp0"]), np.log10(r["solimp2"])]
+            for r in group
+        ])
+        rewards = np.array([r[metric] for r in group], dtype=float)
+        reward_grid = _smooth_surface_grid(
+            points, rewards, grid_x, grid_y, reward_min, reward_max
+        )
+
+        max_y_idx, max_x_idx = np.unravel_index(
+            np.argmax(reward_grid), reward_grid.shape
+        )
+        max_solimp0 = x_plot_values[max_x_idx]
+        max_solimp2 = y_plot_values[max_y_idx]
+        max_reward = float(reward_grid[max_y_idx, max_x_idx])
+
+        mean_over_solimp2 = reward_grid.mean(axis=0)
+        min_over_solimp2 = reward_grid.min(axis=0)
+        max_over_solimp2 = reward_grid.max(axis=0)
+        mean_over_solimp0 = reward_grid.mean(axis=1)
+        min_over_solimp0 = reward_grid.min(axis=1)
+        max_over_solimp0 = reward_grid.max(axis=1)
+
+        fig, axes = plt.subplots(
+            1, 2, figsize=(12.2, 4.4), sharey=True,
+            constrained_layout=True
+        )
+
+        ax = axes[0]
+        ax.fill_between(
+            x_plot_values, min_over_solimp2, max_over_solimp2,
+            color="#4c78a8", alpha=0.16, linewidth=0,
+            label="range over solimp[2]",
+        )
+        ax.plot(
+            x_plot_values, mean_over_solimp2, color="#4c78a8",
+            linewidth=2.2, label="mean over solimp[2]",
+        )
+        ax.scatter(
+            [r["solimp0"] for r in group], [r[metric] for r in group],
+            c="#202020", s=23, alpha=0.45, linewidths=0,
+            label="samples",
+        )
+        ax.axvline(max_solimp0, color="#c03a2b", linestyle="--",
+                   linewidth=1.1, alpha=0.82)
+        ax.scatter(
+            [max_solimp0], [mean_over_solimp2[max_x_idx]],
+            marker="*", s=125, c="#c03a2b", edgecolors="#111111",
+            linewidths=0.45, zorder=5, label="surface max projection",
+        )
+        ax.set_xscale("log")
+        ax.set_xlim(min(x_values), max(x_values))
+        ax.set_xticks(x_values)
+        ax.set_xticklabels([f"{value:g}" for value in x_values])
+        ax.set_xlabel("solimp[0] (log scale)")
+        ax.set_ylabel(metric)
+        ax.set_title("reward vs solimp[0]\ncompressed over solimp[2]")
+        ax.grid(alpha=0.22)
+        ax.legend(fontsize=7.5)
+
+        ax = axes[1]
+        ax.fill_between(
+            y_plot_values, min_over_solimp0, max_over_solimp0,
+            color="#f58518", alpha=0.16, linewidth=0,
+            label="range over solimp[0]",
+        )
+        ax.plot(
+            y_plot_values, mean_over_solimp0, color="#f58518",
+            linewidth=2.2, label="mean over solimp[0]",
+        )
+        ax.scatter(
+            [r["solimp2"] for r in group], [r[metric] for r in group],
+            c="#202020", s=23, alpha=0.45, linewidths=0,
+            label="samples",
+        )
+        ax.axvline(max_solimp2, color="#c03a2b", linestyle="--",
+                   linewidth=1.1, alpha=0.82)
+        ax.scatter(
+            [max_solimp2], [mean_over_solimp0[max_y_idx]],
+            marker="*", s=125, c="#c03a2b", edgecolors="#111111",
+            linewidths=0.45, zorder=5, label="surface max projection",
+        )
+        ax.set_xscale("log")
+        ax.set_xlim(min(y_values), max(y_values))
+        ax.set_xticks(sorted(y_values))
+        ax.set_xticklabels([f"{value:g}" for value in sorted(y_values)])
+        ax.set_xlabel("solimp[2] (log scale, hard to soft)")
+        ax.set_title("reward vs solimp[2]\ncompressed over solimp[0]")
+        ax.grid(alpha=0.22)
+        ax.legend(fontsize=7.5)
+
+        fig.suptitle(
+            f"{display_algo} Go2 collapsed reward trends, "
+            f"solimp[1]={fixed_solimp1:g}, solref[0]={sr0:g}; "
+            f"surface max {max_reward:.2f} at "
+            f"({max_solimp0:.3g}, {max_solimp2:.3g})"
+        )
+
+        sr_name = _solref_filename_value(sr0)
+        if abs(fixed_solimp1 - 0.95) < 1e-9:
+            filename = (
+                f"{algo}_go2_solimp0_solimp2_reward_collapsed_trends_"
+                f"solref_{sr_name}.png"
+            )
+        else:
+            solimp1_name = _solref_filename_value(fixed_solimp1)
+            filename = (
+                f"{algo}_go2_solimp0_solimp2_reward_collapsed_trends_"
+                f"solimp1_{solimp1_name}_solref_{sr_name}.png"
+            )
+        p = os.path.join(FIGURE_DIR, filename)
         fig.savefig(p)
         plt.close(fig)
         paths.append(p)
@@ -1402,6 +1607,9 @@ def main():
             plot_heatmap(results, algo, metric),
             plot_3d_grid(results, algo, metric),
             *plot_solimp0_solimp2_reward_surface_by_solref(
+                results, algo, metric
+            ),
+            *plot_solimp0_solimp2_collapsed_trends_by_solref(
                 results, algo, metric
             ),
             # Softness-based plots

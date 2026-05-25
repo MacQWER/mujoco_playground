@@ -291,6 +291,9 @@ def draw_reward_parameter_volume(
     tick_size=9.5,
     label_size=11.5,
     zoom=0.96,
+    label_pad=17,
+    z_label_pad=13,
+    show_z_label=True,
 ):
   """Draw reward as stacked heatmap slices in solimp parameter space."""
   solimp0_values = sorted({row["solimp0"] for row in results})
@@ -361,9 +364,9 @@ def draw_reward_parameter_volume(
       for index, value in enumerate(solimp1_values)
   ])
   ax.set_zticklabels([param_label(value) for value in solimp2_values])
-  ax.set_xlabel("solimp[0]", labelpad=17)
-  ax.set_ylabel("solimp[1]", labelpad=17)
-  ax.set_zlabel("solimp[2]", labelpad=13)
+  ax.set_xlabel("solimp[0]", labelpad=label_pad)
+  ax.set_ylabel("solimp[1]", labelpad=label_pad)
+  ax.set_zlabel("solimp[2]" if show_z_label else "", labelpad=z_label_pad)
   style_parameter_axis(
       ax,
       tick_size=tick_size,
@@ -381,14 +384,16 @@ def reward_scale_from_datasets(datasets):
   return float(rewards.min()), float(rewards.max())
 
 
-def add_reward_colorbar(fig, reward_norm, cmap, position):
+def add_reward_colorbar(
+    fig, reward_norm, cmap, position, label_size=11, tick_size=9
+):
   mappable = plt.cm.ScalarMappable(norm=reward_norm, cmap=cmap)
   mappable.set_array([])
   cax = fig.add_axes(position)
   colorbar = fig.colorbar(mappable, cax=cax)
-  colorbar.set_label("reward", fontsize=11)
-  colorbar.ax.tick_params(labelsize=9)
-  colorbar.ax.set_title("high", fontsize=9, pad=5)
+  colorbar.set_label("reward", fontsize=label_size)
+  colorbar.ax.tick_params(labelsize=tick_size)
+  colorbar.ax.set_title("high", fontsize=tick_size, pad=5)
   colorbar.ax.text(
       0.5,
       -0.035,
@@ -396,7 +401,7 @@ def add_reward_colorbar(fig, reward_norm, cmap, position):
       transform=colorbar.ax.transAxes,
       ha="center",
       va="top",
-      fontsize=9,
+      fontsize=tick_size,
   )
 
 
@@ -908,9 +913,9 @@ def plot_reward_parameter_volume_by_algo(algo, results, reward_scale):
   reward_norm = Normalize(vmin=reward_scale[0], vmax=reward_scale[1])
   cmap = plt.get_cmap("coolwarm")
 
-  fig = plt.figure(figsize=(14.6, 7.8))
-  fig.subplots_adjust(left=0.02, right=0.87, bottom=0.08, top=0.86,
-                      wspace=0.0)
+  fig = plt.figure(figsize=(19.2, 10.4))
+  fig.subplots_adjust(left=0.018, right=0.885, bottom=0.060, top=0.835,
+                      wspace=-0.04)
   axes = []
   for index, sr0 in enumerate(solref_values, 1):
     ax = fig.add_subplot(1, len(solref_values), index, projection="3d")
@@ -920,27 +925,30 @@ def plot_reward_parameter_volume_by_algo(algo, results, reward_scale):
         sr0,
         reward_norm,
         cmap,
-        tick_size=8.0,
-        label_size=10.0,
-        zoom=0.72,
+        tick_size=16.0,
+        label_size=19.0,
+        zoom=0.88,
+        label_pad=33,
+        z_label_pad=22,
+        show_z_label=False,
     )
-    ax.set_title(f"solref[0]={sr0:.3f}", fontsize=15, pad=12)
+    ax.set_title(f"solref[0]={sr0:.3f}", fontsize=24, pad=18)
     axes.append(ax)
 
+  display_algo = "FoPG" if algo == "apg" else algo.upper()
   fig.suptitle(
-      f"{algo.upper()} PushBox reward heatmap in solimp parameter space",
-      fontsize=17,
+      f"{display_algo} PushBox reward heatmap in solimp parameter space",
+      fontsize=30,
   )
   fig.text(
-      0.5,
-      0.025,
-      "x=solimp[0], y=solimp[1], z=solimp[2]; each horizontal slice fixes "
-      "solimp[2] and interpolates reward over solimp[0]-solimp[1].",
-      ha="center",
-      fontsize=11,
-      color="#333333",
+      0.045, 0.46, "solimp[2]", rotation=90,
+      ha="center", va="center", fontsize=19,
+      fontweight="semibold", color="#101010",
   )
-  add_reward_colorbar(fig, reward_norm, cmap, [0.905, 0.21, 0.020, 0.54])
+  add_reward_colorbar(
+      fig, reward_norm, cmap, [0.910, 0.25, 0.023, 0.48],
+      label_size=20, tick_size=17,
+  )
 
   path = FIGURE_DIR / f"{algo}_pushbox_solimp_parameter_reward_heatmap.png"
   fig.savefig(path, dpi=320)
