@@ -913,8 +913,8 @@ def plot_reward_parameter_volume_by_algo(algo, results, reward_scale):
   reward_norm = Normalize(vmin=reward_scale[0], vmax=reward_scale[1])
   cmap = plt.get_cmap("coolwarm")
 
-  fig = plt.figure(figsize=(19.2, 10.4))
-  fig.subplots_adjust(left=0.018, right=0.885, bottom=0.060, top=0.835,
+  fig = plt.figure(figsize=(20.2, 11.8))
+  fig.subplots_adjust(left=0.018, right=0.890, bottom=0.055, top=0.780,
                       wspace=-0.04)
   axes = []
   for index, sr0 in enumerate(solref_values, 1):
@@ -925,33 +925,34 @@ def plot_reward_parameter_volume_by_algo(algo, results, reward_scale):
         sr0,
         reward_norm,
         cmap,
-        tick_size=16.0,
-        label_size=19.0,
+        tick_size=18.0,
+        label_size=21.0,
         zoom=0.88,
         label_pad=33,
         z_label_pad=22,
         show_z_label=False,
     )
-    ax.set_title(f"solref[0]={sr0:.3f}", fontsize=24, pad=18)
+    ax.set_title(f"solref[0]={sr0:.3f}", fontsize=32, pad=28)
     axes.append(ax)
 
   display_algo = "FoPG" if algo == "apg" else algo.upper()
   fig.suptitle(
       f"{display_algo} PushBox reward heatmap in solimp parameter space",
-      fontsize=30,
+      fontsize=42,
+      y=0.965,
   )
   fig.text(
       0.045, 0.46, "solimp[2]", rotation=90,
-      ha="center", va="center", fontsize=19,
+      ha="center", va="center", fontsize=23,
       fontweight="semibold", color="#101010",
   )
   add_reward_colorbar(
-      fig, reward_norm, cmap, [0.910, 0.25, 0.023, 0.48],
-      label_size=20, tick_size=17,
+      fig, reward_norm, cmap, [0.918, 0.24, 0.021, 0.47],
+      label_size=24, tick_size=20,
   )
 
   path = FIGURE_DIR / f"{algo}_pushbox_solimp_parameter_reward_heatmap.png"
-  fig.savefig(path, dpi=320)
+  fig.savefig(path, dpi=320, pad_inches=0.24)
   plt.close(fig)
   return path
 

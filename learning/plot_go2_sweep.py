@@ -1314,8 +1314,8 @@ def plot_solimp0_solimp2_reward_surface_by_solref(
         )
         facecolors = _hillshade_facecolors(cmap(pen_norm(log_pen_grid)), reward_grid)
 
-        fig = plt.figure(figsize=(11.2, 8.0))
-        fig.subplots_adjust(left=0.00, right=0.78, top=0.88, bottom=0.04)
+        fig = plt.figure(figsize=(9.6, 6.8))
+        fig.subplots_adjust(left=0.00, right=0.76, top=0.80, bottom=0.06)
         ax = fig.add_subplot(1, 1, 1, projection="3d")
         ax.plot_surface(
             grid_x,
@@ -1341,9 +1341,9 @@ def plot_solimp0_solimp2_reward_surface_by_solref(
             linewidths=0.45,
             alpha=0.68,
         )
-        ax.set_xlabel("solimp[0] (log scale)", labelpad=8)
-        ax.set_ylabel("solimp[2] (log scale)", labelpad=12)
-        ax.set_zlabel(metric, labelpad=8)
+        ax.set_xlabel("solimp[0] (log scale)", labelpad=10, fontsize=15)
+        ax.set_ylabel("solimp[2] (log scale)", labelpad=14, fontsize=15)
+        ax.set_zlabel(metric, labelpad=10, fontsize=15)
         ax.set_xlim(min(x_log_values), max(x_log_values))
         ax.set_ylim(min(y_log_values), max(y_log_values))
         ax.set_zlim(reward_min - 0.03, reward_max + 0.03)
@@ -1353,9 +1353,9 @@ def plot_solimp0_solimp2_reward_surface_by_solref(
         y_ticklabels = [f"{value:g}" for value in SOLIMP2_PLOT_VALUES]
         y_ticklabels[-1] = "0.001\n\n"
         ax.set_yticklabels(y_ticklabels)
-        ax.xaxis.set_tick_params(labelsize=11, pad=1)
-        ax.yaxis.set_tick_params(labelsize=11, pad=8)
-        ax.zaxis.set_tick_params(labelsize=11, pad=5)
+        ax.xaxis.set_tick_params(labelsize=12, pad=1)
+        ax.yaxis.set_tick_params(labelsize=12, pad=8)
+        ax.zaxis.set_tick_params(labelsize=12, pad=5)
         ax.view_init(elev=27, azim=-52)
         ax.set_box_aspect((1.2, 1.0, 0.62))
         ax.xaxis.set_pane_color((0.96, 0.96, 0.96, 1.0))
@@ -1365,10 +1365,11 @@ def plot_solimp0_solimp2_reward_surface_by_solref(
             axis._axinfo["grid"]["color"] = (0.68, 0.68, 0.68, 0.75)
             axis._axinfo["grid"]["linewidth"] = 0.75
         ax.set_title(
-            f"{display_algo} Go2 reward surface, solimp[1]={fixed_solimp1:g}, "
-            f"solref[0]={sr0:g}",
-            fontsize=15,
-            pad=16,
+            f"{display_algo} Go2 reward surface\n"
+            f"solimp[1]={fixed_solimp1:g}, solref[0]={sr0:g}",
+            fontsize=22,
+            pad=20,
+            loc="left",
         )
 
         cbar = fig.colorbar(
@@ -1379,10 +1380,10 @@ def plot_solimp0_solimp2_reward_surface_by_solref(
         )
         cbar.set_ticks(np.log10(tick_mm))
         cbar.set_ticklabels([f"{value:.1f}" for value in tick_mm])
-        cbar.ax.tick_params(labelsize=11)
+        cbar.ax.tick_params(labelsize=12)
         cbar.set_label(
             "penetration (mm), clipped; red = harder",
-            fontsize=13,
+            fontsize=15,
         )
 
         sr_name = _solref_filename_value(sr0)
