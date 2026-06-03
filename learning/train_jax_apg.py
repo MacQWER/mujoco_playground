@@ -195,6 +195,16 @@ _PROJECT = flags.DEFINE_string("project", "mjplayground-apg", "Wandb project nam
 _GAIT_DIAGRAM = flags.DEFINE_boolean(
     "gait_diagram", False, "Plot gait contact diagram (Gantt chart) for Go2"
 )
+_TARGET_COMMAND = flags.DEFINE_list(
+    "target_command",
+    ["0.5", "0.0", "0.0"],
+    "Fixed play-only command as vx,vy,yaw_rate.",
+)
+_VELOCITY_REPORT = flags.DEFINE_boolean(
+    "velocity_report",
+    False,
+    "Record base velocity and write a velocity CSV after rollout.",
+)
 _TRAIN_ENV_CFG_OVERRIDES = flags.DEFINE_string(
     "train_env_cfg_overrides", None,
     "JSON string to override train env config (e.g., '{\"noise_config.level\": 0.0}')"
@@ -214,6 +224,49 @@ def get_rl_config(env_name: str) -> config_dict.ConfigDict:
         return dm_control_suite_params.brax_apg_config(env_name)
 
     raise ValueError(f"Env {env_name} not found in {registry.ALL_ENVS}.")
+
+
+def _parse_target_command() -> jp.ndarray:
+    command = [float(x) for x in _TARGET_COMMAND.value]
+    if len(command) != 3:
+        raise ValueError(
+            "--target_command must contain exactly three values: vx,vy,yaw_rate"
+        )
+    return jp.array(command)
+
+
+def _velocity_csv_name(suffix: str | None) -> str:
+    if suffix is None:
+        return "base_velocity.csv"
+    return f"base_velocity-{suffix}.csv"
+
+
+def _save_velocity_csv(
+    name: str,
+    times_s: np.ndarray,
+    local_linvel: np.ndarray,
+    yaw_rate: np.ndarray,
+    command: np.ndarray,
+) -> None:
+    speed_xy = np.linalg.norm(local_linvel[:, :2], axis=1)
+    command_rows = np.tile(command.reshape(1, 3), (len(times_s), 1))
+    rows = np.column_stack(
+        [
+            times_s,
+            local_linvel[:, 0],
+            local_linvel[:, 1],
+            local_linvel[:, 2],
+            yaw_rate,
+            speed_xy,
+            command_rows,
+        ]
+    )
+    header = (
+        "time_s,local_vx_mps,local_vy_mps,local_vz_mps,"
+        "yaw_rate_radps,speed_xy_mps,command_vx_mps,command_vy_mps,"
+        "command_yaw_radps"
+    )
+    np.savetxt(name, rows, delimiter=",", header=header, comments="")
 
 
 def rscope_fn(full_states, obs, rew, done):
@@ -545,9 +598,16 @@ def main(argv):
 
     # Run evaluation rollouts.
     rng = jax.random.PRNGKey(_SEED.value)
-    target_command = jp.array([0.5, 0.0, 0.0])
+    target_command = _parse_target_command()
+    print(
+        "Target command: "
+        f"vx={float(target_command[0]):.3f} m/s, "
+        f"vy={float(target_command[1]):.3f} m/s, "
+        f"yaw={float(target_command[2]):.3f} rad/s"
+    )
 
     rollout = []
+    velocity_history = []
     contact_history = []  # Store contact info for gait diagram
     state = jit_reset(rng)
     state = set_cmd(state, target_command)  # Set command before first step
@@ -558,6 +618,13 @@ def main(argv):
         state = jit_step(state, ctrl)
         state = set_cmd(state, target_command)  # Update command after each step
         rollout.append(state)
+
+        if _VELOCITY_REPORT.value:
+            local_linvel = np.asarray(
+                jax.device_get(eval_env.get_local_linvel(state.data))
+            )
+            yaw_rate = float(jax.device_get(eval_env.get_gyro(state.data)[2]))
+            velocity_history.append((local_linvel, yaw_rate))
 
         # Collect contact info for gait diagram
         if _GAIT_DIAGRAM.value:
@@ -593,6 +660,32 @@ def main(argv):
         video_name = "rollout0.mp4"
     media.write_video(video_name, frames, fps=fps)
     print(f"Rollout video saved as '{video_name}'.")
+
+    if _VELOCITY_REPORT.value:
+        if not velocity_history:
+            raise RuntimeError("Velocity report requested but no velocity was recorded.")
+        command_np = np.asarray(jax.device_get(target_command))
+        times_s = (np.arange(len(velocity_history)) + 1) * float(eval_env.dt)
+        local_linvel = np.stack([x[0] for x in velocity_history])
+        yaw_rate = np.asarray([x[1] for x in velocity_history])
+        csv_name = _velocity_csv_name(_SUFFIX.value)
+        _save_velocity_csv(csv_name, times_s, local_linvel, yaw_rate, command_np)
+
+        speed_xy = np.linalg.norm(local_linvel[:, :2], axis=1)
+        mean_xy = np.mean(local_linvel[:, :2], axis=0)
+        mean_yaw = float(np.mean(yaw_rate))
+        mean_tracking_error = np.mean(
+            np.linalg.norm(local_linvel[:, :2] - command_np[:2], axis=1)
+        )
+        print(
+            "Base velocity summary: "
+            f"mean_vx={mean_xy[0]:.3f} m/s, "
+            f"mean_vy={mean_xy[1]:.3f} m/s, "
+            f"mean_speed_xy={float(np.mean(speed_xy)):.3f} m/s, "
+            f"mean_yaw={mean_yaw:.3f} rad/s, "
+            f"mean_xy_tracking_error={float(mean_tracking_error):.3f} m/s"
+        )
+        print(f"Base velocity CSV saved as '{csv_name}'.")
 
     # Plot gait contact diagram (Gantt chart) if requested
     if _GAIT_DIAGRAM.value and len(contact_history) > 0:

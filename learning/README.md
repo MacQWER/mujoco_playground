@@ -69,7 +69,7 @@ CUDA_VISIBLE_DEVICES=3 python learning/train_jax_apg.py --env_name Go2Joystick2 
 soft parameters:
 
 ```bash
-CUDA_VISIBLE_DEVICES=3 python learning/train_jax_apg.py --env_name Go2Joystick2 --train_env_cfg_overrides '{"env.solimp": [0.015, 0.5, 0.31], "env.solref": [0.02, 1.0], "env.iterations": 1}' --eval_env_cfg_overrides '{"env.solimp": [0.95, 0.99, 0.001], "env.solref": [0.004, 1.0], "env.iterations": 100}' --use_wandb --suffix "apg-train-soft-eval-hard"
+CUDA_VISIBLE_DEVICES=3 python learning/train_jax_apg.py --env_name Go2Joystick2 --train_env_cfg_overrides '{"env.solimp": [0.015, 0.5, 0.31], "env.solref": [0.1, 1.0], "env.iterations": 1}' --eval_env_cfg_overrides '{"env.solimp": [0.95, 0.99, 0.001], "env.solref": [0.004, 1.0], "env.iterations": 100}' --use_wandb --suffix "apg-train-soft-eval-hard"
 ```
 
 no symloss:
