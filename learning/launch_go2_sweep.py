@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Launch Go2Joystick PPO solimp+solref sweep across GPUs.
+"""Launch Go2Joystick2 PPO solimp+solref sweep across GPUs.
 
 Grid: 57 train configs with solimp[1] fixed at 0.95, preserving the
 old base/light/mid slot families needed for the 3D solimp0-solimp2 surfaces.
@@ -37,11 +37,18 @@ import time
 from absl import app
 from absl import flags
 
-PPO_PROJECT = "go2-joystick-sweep-ppo"
+ENV_NAME = "Go2Joystick2"
+PPO_PROJECT = "go2-joystick2-sweep-ppo"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 RUNNER = os.path.join(SCRIPT_DIR, "go2_sweep_runner.py")
-LOG_DIR = os.path.join(SCRIPT_DIR, "..", "logs", "go2_sweep")
+DEFAULT_LOG_DIR = os.path.join(
+    SCRIPT_DIR,
+    "..",
+    "logs",
+    "go2_sweep",
+    "go2joystick2_ppo_x64_65eval",
+)
 
 # Go2 PPO is lightweight in memory on A100s (~1 GiB/process after JIT), and the
 # launcher only starts the next process on a GPU after the previous one reports
@@ -159,10 +166,10 @@ def launch(dry_run=False):
   mid42_end = mid42_start + mid42_count - 1
 
   print("=" * 60)
-  print("Go2 Solimp Sweep Launcher")
+  print(f"{ENV_NAME} Solimp Sweep Launcher")
   print("=" * 60)
   if _ALGORITHM.value not in (None, "ppo"):
-    raise ValueError("Go2Joystick sweep is PPO-only; use --algo=ppo.")
+    raise ValueError(f"{ENV_NAME} sweep is PPO-only; use --algo=ppo.")
 
   print(f"PPO Project: {PPO_PROJECT}")
   print(f"Base grid: {base_count} configs in slots 0-{base_count - 1}.")
@@ -191,7 +198,8 @@ def launch(dry_run=False):
   print(f"Grid: {len(grid)} PPO configs")
   print()
 
-  log_dir = LOG_DIR
+  log_dir = os.path.abspath(os.path.expanduser(_SWEEP_DIR.value))
+  print(f"Output directory: {log_dir}")
   all_slots = list(enumerate(grid))
 
   algos_to_run = [("ppo", PPO_PROJECT, PPO_MEM_LIMIT)]
@@ -267,6 +275,7 @@ def launch(dry_run=False):
           sys.executable, RUNNER,
           f"--algorithm={algo}",
           f"--configs={json.dumps(slots[slot_id])}",
+          f"--output_dir={log_dir}",
       ]
       env = os.environ.copy()
       env["CUDA_VISIBLE_DEVICES"] = str(gpu)
@@ -349,7 +358,9 @@ def launch(dry_run=False):
   print(f"\nAll complete!")
 
 
-_ALGORITHM = flags.DEFINE_string("algo", "ppo", "Run PPO sweep. APG is not supported for Go2Joystick sweep.")
+_ALGORITHM = flags.DEFINE_string(
+    "algo", "ppo", f"Run PPO sweep. APG is not supported for {ENV_NAME}."
+)
 _DRY_RUN = flags.DEFINE_boolean("dry_run", False, "Show schedule without launching")
 _MAX_CONFIGS = flags.DEFINE_integer(
     "max_configs", 57,
@@ -358,6 +369,11 @@ _MAX_CONFIGS = flags.DEFINE_integer(
 _SKIP_COMPLETED = flags.DEFINE_boolean(
     "skip_completed", False,
     "Skip slots whose previous log contains the 'video done' completion marker.",
+)
+_SWEEP_DIR = flags.DEFINE_string(
+    "sweep_dir",
+    DEFAULT_LOG_DIR,
+    "Experiment-specific output directory for logs, videos, and figures.",
 )
 if __name__ == "__main__":
   app.run(lambda argv: launch(dry_run=_DRY_RUN.value))

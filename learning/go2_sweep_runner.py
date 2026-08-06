@@ -11,14 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Sweep runner for Go2Joystick solimp+solref parameter sweep.
+"""Sweep runner for Go2Joystick2 solimp+solref parameter sweep.
 
 Each invocation handles a BATCH of configs on a SINGLE GPU,
 running them sequentially. JAX persistent cache ensures compilation
 happens once per architecture.
 
 Usage:
-    CUDA_VISIBLE_DEVICES=0 WANDB_PROJECT=go2-joystick-sweep-ppo \
+    CUDA_VISIBLE_DEVICES=0 WANDB_PROJECT=go2-joystick2-sweep-ppo \
         python learning/go2_sweep_runner.py --configs '[[0.015,0.95,0.001,0.02],...]'
 """
 
@@ -39,8 +39,8 @@ os.environ["XLA_FLAGS"] = xla_flags
 
 import jax
 from jax import config as jax_config
-jax.config.update("jax_enable_x64", False)
-# jax.config.update("jax_default_matmul_precision", "high")
+jax.config.update("jax_enable_x64", True)
+jax.config.update("jax_default_matmul_precision", "high")
 
 _cache_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "jit_cache")
 os.makedirs(_cache_path, exist_ok=True)
@@ -68,11 +68,15 @@ import wandb
 warnings.filterwarnings("ignore")
 logging.set_verbosity(logging.WARNING)
 
-ENV_NAME = "Go2Joystick"
+ENV_NAME = "Go2Joystick2"
 EVAL_SOLIMP = [0.9, 0.95, 0.001]
 EVAL_SOLREF = [0.004, 1.0]
-TRAIN_ITERATIONS = 10
-EVAL_ITERATIONS = 10
+DEFAULT_OUTPUT_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)),
+    "logs",
+    "go2_sweep",
+    "go2joystick2_ppo_x64_65eval",
+)
 
 
 def build_params(s0, s1, s2, sr0):
@@ -124,7 +128,7 @@ def _render_video(eval_env, make_inference_fn, params, suffix, algorithm):
   traj = rollout[::render_every]
   frames = eval_env.render(traj, height=480, width=640, camera="track")
 
-  video_dir = os.path.join("logs", "go2_sweep", "videos", algorithm)
+  video_dir = os.path.join(_OUTPUT_DIR.value, "videos", algorithm)
   os.makedirs(video_dir, exist_ok=True)
   video_path = os.path.join(video_dir, f"rollout-{algorithm}-{suffix}.mp4")
   media.write_video(video_path, frames, fps=fps)
@@ -161,13 +165,18 @@ def run_ppo(s0, s1, s2, sr0, suffix):
   train_env_cfg = copy.deepcopy(env_cfg)
   train_env_cfg.env.solimp = solimp
   train_env_cfg.env.solref = solref
-  train_env_cfg.env.iterations = TRAIN_ITERATIONS
   eval_env_cfg = copy.deepcopy(env_cfg)
   eval_env_cfg.env.solimp = EVAL_SOLIMP
   eval_env_cfg.env.solref = EVAL_SOLREF
-  eval_env_cfg.env.iterations = EVAL_ITERATIONS
 
   ppo_params = locomotion_params.brax_ppo_config(ENV_NAME, "jax")
+  wandb.config.update({
+      "ppo_params": ppo_params.to_dict(),
+      "train_env_cfg": train_env_cfg.to_dict(),
+      "eval_env_cfg": eval_env_cfg.to_dict(),
+      "jax_enable_x64": True,
+      "jax_default_matmul_precision": "high",
+  })
 
   print(f"  > load env ...")
   env = registry.load(ENV_NAME, config=train_env_cfg)
@@ -271,10 +280,10 @@ def run_apg(s0, s1, s2, sr0, suffix):
 def main(argv):
   del argv
   configs = json.loads(_CONFIGS.value)
-  project = os.environ.get("WANDB_PROJECT", "go2-joystick-sweep")
+  project = os.environ.get("WANDB_PROJECT", "go2-joystick2-sweep-ppo")
   algorithm = _ALGORITHM.value
   if algorithm != "ppo":
-    raise ValueError("Go2Joystick sweep runner is PPO-only; use --algorithm=ppo.")
+    raise ValueError(f"{ENV_NAME} sweep runner is PPO-only; use --algorithm=ppo.")
 
   # Random delay (0-5s) to stagger JIT compilation across processes.
   # Earlier processes compile and write to jit_cache; later ones read it.
@@ -295,8 +304,12 @@ def main(argv):
         "solref0": float(sr0),
         "train_solimp": solimp, "train_solref": solref,
         "eval_solimp": EVAL_SOLIMP, "eval_solref": EVAL_SOLREF,
-        "train_iterations": TRAIN_ITERATIONS,
-        "eval_iterations": EVAL_ITERATIONS,
+        "train_iterations": int(
+            registry.get_default_config(ENV_NAME).env.iterations
+        ),
+        "eval_iterations": int(
+            registry.get_default_config(ENV_NAME).env.iterations
+        ),
     })
 
     if algorithm == "ppo":
@@ -309,6 +322,11 @@ def main(argv):
 
 _ALGORITHM = flags.DEFINE_string("algorithm", "ppo", "PPO only")
 _CONFIGS = flags.DEFINE_string("configs", "[]", "JSON list of [solimp0,solimp1,solimp2,solref0]")
+_OUTPUT_DIR = flags.DEFINE_string(
+    "output_dir",
+    DEFAULT_OUTPUT_DIR,
+    "Experiment-specific directory for rollout videos.",
+)
 
 if __name__ == "__main__":
   app.run(main)

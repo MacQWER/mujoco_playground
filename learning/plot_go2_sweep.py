@@ -17,7 +17,10 @@ import statistics
 import matplotlib.pyplot as plt
 import numpy as np
 
-LOG_DIR = os.path.join(os.path.dirname(__file__), "..", "logs", "go2_sweep")
+DEFAULT_LOG_DIR = os.path.join(
+    os.path.dirname(__file__), "..", "logs", "go2_sweep"
+)
+LOG_DIR = DEFAULT_LOG_DIR
 WANDB_DIR = os.path.join(os.path.dirname(__file__), "..", "wandb")
 FIGURE_DIR = os.path.join(LOG_DIR, "figures")
 
@@ -103,9 +106,9 @@ PAIR_MARKERS = ["o", "s", "^", "D", "P", "X", "v", "<", ">"]
 
 # Softness ranking from ball-drop calibration
 SOFTNESS_CSV_CANDIDATES = [
-    os.path.join(LOG_DIR, "softness_ranking_augmented_mid42.csv"),
-    os.path.join(LOG_DIR, "softness_ranking_augmented_light36.csv"),
-    os.path.join(LOG_DIR, "softness_ranking.csv"),
+    os.path.join(DEFAULT_LOG_DIR, "softness_ranking_augmented_mid42.csv"),
+    os.path.join(DEFAULT_LOG_DIR, "softness_ranking_augmented_light36.csv"),
+    os.path.join(DEFAULT_LOG_DIR, "softness_ranking.csv"),
 ]
 SOFTNESS_CSV = next(
     (path for path in SOFTNESS_CSV_CANDIDATES if os.path.exists(path)),
@@ -1575,11 +1578,22 @@ def _parse_args():
         default="ppo",
         help="Which algorithm results to plot. Default: ppo.",
     )
+    parser.add_argument(
+        "--log_dir",
+        default=DEFAULT_LOG_DIR,
+        help=(
+            "Sweep log directory. Figures are written below its figures/ "
+            "directory."
+        ),
+    )
     return parser.parse_args()
 
 
 def main():
+    global LOG_DIR, FIGURE_DIR
     args = _parse_args()
+    LOG_DIR = os.path.abspath(os.path.expanduser(args.log_dir))
+    FIGURE_DIR = os.path.join(LOG_DIR, "figures")
     os.makedirs(FIGURE_DIR, exist_ok=True)
     plt.rcParams.update({
         "font.size": 10, "axes.titlesize": 11, "axes.labelsize": 10,
